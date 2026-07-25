@@ -36,6 +36,9 @@ public final class ProcessBuilderLarkCliProcessExecutor implements LarkCliProces
     private static final long CANCELLATION_POLL_MILLIS = 50;
     private static final long TERMINATION_GRACE_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
 
+    /**
+     * 执行 cli 指令
+     */
     @Override
     public LarkCliProcessResult execute(List<String> argv,
                                         String stdin,
@@ -48,23 +51,30 @@ public final class ProcessBuilderLarkCliProcessExecutor implements LarkCliProces
         }
         actualArgv.forEach(argument -> Objects.requireNonNull(argument, "argv argument"));
         String actualStdin = Objects.requireNonNull(stdin, "stdin");
+        // 本次 lark-cli 执行允许持续到哪个时间点，用来统一控制整个进程执行的总超时时间。
         Deadline deadline = Deadline.start(requirePositive(timeout));
         CancellationToken actualCancellationToken =
                 Objects.requireNonNull(cancellationToken, "cancellationToken");
         actualCancellationToken.throwIfCancellationRequested(CancellationPhase.TOOL_EXECUTION);
 
         ProcessBuilder processBuilder = new ProcessBuilder(actualArgv);
+        // 删除进程中的环境变量
         removeModelCredentials(processBuilder.environment());
+        // 启动 cli 进程
         Process process = processBuilder.start();
         Set<ProcessHandle> knownDescendants = new LinkedHashSet<>();
+        // 虚拟线程执行器
         ExecutorService ioExecutor = Executors.newVirtualThreadPerTaskExecutor();
         AtomicLong remainingOutputBytes = new AtomicLong(MAX_CAPTURE_BYTES);
+        // lark-cli stdin ，向 cli 进程输入内容
         Future<Void> stdinWriter = ioExecutor.submit(
                 () -> write(process.getOutputStream(), actualStdin)
         );
+        // lark-cli stdout，从 cli 进程读取内容
         Future<String> stdout = ioExecutor.submit(
                 () -> read(process.getInputStream(), remainingOutputBytes)
         );
+        // lark-cli stderr
         Future<String> stderr = ioExecutor.submit(
                 () -> read(process.getErrorStream(), remainingOutputBytes)
         );

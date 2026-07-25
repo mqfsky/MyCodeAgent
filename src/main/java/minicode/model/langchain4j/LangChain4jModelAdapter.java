@@ -95,9 +95,13 @@ public final class LangChain4jModelAdapter implements ForkableModelAdapter {
         List<Tool> currentTools = tools.list();
         try {
             // 第一层转换：只处理 Provider 可理解的消息和请求级工具声明。
+            // 将内部ChatMessage转为 langchain4j 的ChatMessage
             List<dev.langchain4j.data.message.ChatMessage> providerMessages =
                     messageMapper.map(actualMessages);
+            // 将内部 Tool 转为 langchain4j 的 ToolSpecification
             List<ToolSpecification> toolSpecifications = toolMapper.map(currentTools);
+
+            // 构建请求
             ChatRequest request = ChatRequest.builder()
                     .messages(providerMessages)
                     .toolSpecifications(toolSpecifications)
@@ -107,9 +111,11 @@ public final class LangChain4jModelAdapter implements ForkableModelAdapter {
             // 这里先保存无损快照，HTTP 兼容层会在真正发请求前按名称/顺序把原始数据写回。
             ProviderRequestContext.Snapshot snapshot =
                     ProviderRequestContext.snapshot(runtimeConfig.provider(), currentTools, actualMessages);
+
+            // 真正调用模型
             ChatResponse response = requestContext.within(snapshot, () -> chatModel.chat(request));
 
-            // 第二层转换：只生成 AgentStep；是否执行工具仍由 AgentLoop 决定。
+            // 第二层转换：解析 response，只生成 AgentStep；是否执行工具仍由 AgentLoop 决定。
             return responseMapper.map(runtimeConfig.provider(), response);
         } catch (ProviderRequestException exception) {
             // 映射器已经生成 CodeAgent 标准异常时直接透传，避免重复包装丢失状态码和 retryable。

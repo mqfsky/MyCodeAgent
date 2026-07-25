@@ -374,20 +374,28 @@ public record ApplicationServices(ToolRegistry toolRegistry,
 
         // 注册工具
         ToolRegistry registry = createBuiltInToolRegistry(permissionService, workspacePathResolver, skillRegistry);
+
+        // 注册问答工具
         registry.register(new StartStudyQuizTool(studyService));
         registry.register(new GetStudyReferenceTool(studyService));
         registry.register(new PrepareStudyReviewTool(studyService));
         registry.register(new SaveStudyReviewTool(studyService));
         registry.register(new FinishStudyQuizTool(studyService));
         registry.register(new QueryStudyProgressTool(studyService));
+
+        // 先检查配置文件是否启用飞书，如果启用了在进行工具注册
         runtimeConfig.flatMap(config -> config.integrations().feishuCalendar())
                 .filter(FeishuCalendarConfig::enabled)
                 .ifPresent(config -> registerFeishuCalendarTool(registry, permissionService, config));
+
+        // 检查是否开启记忆模块
         MemoryConfig memoryConfig = runtimeConfig.map(RuntimeConfig::memory).orElseGet(MemoryConfig::disabled);
         Optional<MarkdownMemoryStore> personalMemoryStore;
         if (memoryConfig.enabled()) {
+            // 记忆持久化工具
             MarkdownMemoryStore memoryStore = new MarkdownMemoryStore(new MemoryPathResolver(actualHome, actualCwd));
             personalMemoryStore = Optional.of(memoryStore);
+            // 注册计划查询工具
             registry.register(new QueryPlanTool(
                     memoryStore,
                     new PlanMarkdownParser(),

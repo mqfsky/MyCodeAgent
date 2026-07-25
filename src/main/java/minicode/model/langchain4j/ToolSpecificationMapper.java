@@ -54,6 +54,7 @@ public final class ToolSpecificationMapper {
         List<ToolSpecification> specifications = new ArrayList<>(source.size());
         for (Tool tool : source) {
             Tool actual = Objects.requireNonNull(tool, "tool");
+            // 构造 名称，描述，参数
             specifications.add(ToolSpecification.builder()
                     .name(actual.metadata().name())
                     .description(actual.metadata().description())

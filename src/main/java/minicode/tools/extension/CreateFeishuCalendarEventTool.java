@@ -65,7 +65,7 @@ public final class CreateFeishuCalendarEventTool implements Tool {
                     + "Call only for the user's explicit request to create, add, or schedule an event, "
                     + "or for a direct clarification answer in that active request. "
                     + "Use structured date and clock fields; every successful write requires a user preview.",
-            INPUT_SCHEMA,
+            INPUT_SCHEMA, // 参数格式
             ToolOrigin.EXTENSION,
             Set.of(ToolCapability.EXTERNAL_WRITE),
             ToolStatus.AVAILABLE
@@ -113,6 +113,7 @@ public final class CreateFeishuCalendarEventTool implements Tool {
         try {
             toolContext.cancellationToken().throwIfCancellationRequested(CancellationPhase.TOOL_EXECUTION);
 
+            // 提取参数
             String summary = input.path("summary").asText();
             String originalTimeText = input.path("originalTimeText").asText();
             CalendarDateSpec date = dateSpec(input.path("date"));
@@ -122,14 +123,18 @@ public final class CreateFeishuCalendarEventTool implements Tool {
             int reminderMinutes = input.path("reminderMinutes").asInt(defaultReminderMinutes);
             Optional<String> description = optionalText(input.get("description"));
 
+            // 时间窗口，包含开始时间，结束时间
             ResolvedCalendarWindow window = timeResolver.resolve(
                     date,
                     startTime,
                     endTime,
                     durationMinutes
             );
+
+            // 创建动作指纹，为“实际要创建的这条日程”生成一个稳定身份，用来识别重试是不是同一个外部操作，避免重复创建。
             String actionFingerprint = actionFingerprint(
                     summary, window, reminderMinutes, description);
+            // 构造权限确认内容，用于给用户看的
             PermissionResource.ExternalActionResource permissionResource =
                     new PermissionResource.ExternalActionResource(
                             "Feishu Calendar",
@@ -151,11 +156,15 @@ public final class CreateFeishuCalendarEventTool implements Tool {
             );
 
             toolContext.cancellationToken().throwIfCancellationRequested(CancellationPhase.PERMISSION_PROMPT);
+            // 申请授权，外部服务必须都进行申请，不存在allow always，allow turn
             permissionService.ensureExternalAction(permissionResource, permissionContext);
             toolContext.cancellationToken().throwIfCancellationRequested(CancellationPhase.PERMISSION_PROMPT);
             toolContext.cancellationToken().throwIfCancellationRequested(CancellationPhase.TOOL_EXECUTION);
 
+            // 利用指纹+sessionID生成幂等键，避免在飞书中创建两个相同事件
             String idempotencyKey = idempotencyKey(toolContext, actionFingerprint);
+
+            // 调用gateway 向飞书 CLI发送请求
             FeishuCalendarCreateResult result = gateway.create(
                     new FeishuCalendarCreateRequest(
                             summary,
@@ -167,8 +176,7 @@ public final class CreateFeishuCalendarEventTool implements Tool {
                     idempotencyKey,
                     toolContext.cancellationToken()
             );
-            // The external write has completed and returned a concrete event. A cancellation that
-            // races with this point must not discard the success and encourage a duplicate retry.
+
             return ToolResult.ok(successJson(result, summary, window, reminderMinutes).toString());
         } catch (CancellationRequestedException exception) {
             throw exception;
@@ -185,6 +193,7 @@ public final class CreateFeishuCalendarEventTool implements Tool {
         if (input == null || !input.isObject()) {
             return;
         }
+        // 将参数校验后加入 builder
         rejectUnknownFields(input, TOP_LEVEL_FIELDS, "", builder);
         copyRequiredText(input, "summary", 200, builder);
         copyRequiredText(input, "originalTimeText", 200, builder);

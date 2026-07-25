@@ -51,6 +51,7 @@ final class ProviderRequestContext {
         Snapshot previous = current.get();
         current.set(snapshot);
         try {
+            // 调用模型
             return action.get();
         } finally {
             // 支持同线程嵌套调用：有外层上下文时恢复外层，没有时彻底 remove。

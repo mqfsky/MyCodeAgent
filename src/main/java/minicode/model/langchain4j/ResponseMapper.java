@@ -57,8 +57,11 @@ public final class ResponseMapper {
         AiMessage aiMessage = Objects.requireNonNull(actualResponse.aiMessage(), "response.aiMessage");
 
         // 分别解析正文语义、工具调用、Provider 诊断和 token 用量，再统一组装 AgentStep。
+        // 文本及标签
         ParsedText parsedText = parseAssistantText(aiMessage.text());
+        //  将 langchain4j 的工具调用转为内部工具调用
         List<ToolCall> toolCalls = mapToolCalls(aiMessage.toolExecutionRequests());
+
         ResponseDetails details = responseDetails(actualProvider, actualResponse, aiMessage);
         Optional<ProviderUsage> usage = providerUsage(actualProvider, actualResponse.metadata());
         StepDiagnostics diagnostics = new StepDiagnostics(
@@ -106,6 +109,7 @@ public final class ResponseMapper {
 
             // tool call id 用于后续结果配对，重复 id 会让 ToolRegistry 无法确定结果归属，
             // 因此必须在任何工具执行之前直接拒绝整份 Provider 响应。
+            // 去重
             if (!ids.add(id)) {
                 throw invalidResponse("Duplicate tool call id: " + id, null);
             }
@@ -121,6 +125,7 @@ public final class ResponseMapper {
                 // CodeAgent 工具协议只接受 object 根参数，不生成新 id，也不把坏参数替换成 {}。
                 throw invalidResponse("Tool call arguments must be a JSON object for " + name, null);
             }
+            // 将 langchain4j 的工具调用转为内部工具调用
             calls.add(new ToolCall(id, name, input));
         }
         return List.copyOf(calls);

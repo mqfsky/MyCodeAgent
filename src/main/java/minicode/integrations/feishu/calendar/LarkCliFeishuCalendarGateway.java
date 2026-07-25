@@ -48,7 +48,10 @@ public final class LarkCliFeishuCalendarGateway implements FeishuCalendarGateway
         CancellationToken actualCancellationToken =
                 Objects.requireNonNull(cancellationToken, "cancellationToken");
 
+        // 第一次调用 CLI，查询当前用户主日历 ID
+        // 因为用户可能不止一个日历，需要查询到主日历 ID，将日程写入主日历
         String calendarId = primaryCalendarId(actualCancellationToken);
+        // 创建日程，返回创建结果
         LarkCliProcessResult createResult = execute(
                 List.of(
                         cliPath.toString(),
@@ -59,15 +62,17 @@ public final class LarkCliFeishuCalendarGateway implements FeishuCalendarGateway
                         "--data", "-",
                         "--format", "json"
                 ),
-                createPayload(actualRequest),
+                createPayload(actualRequest), // 构造 payload，就是日历的内容
                 "creating the Feishu calendar event",
                 actualCancellationToken,
                 true
         );
+        // 响应解析
         return parseCreateResult(createResult.stdout());
     }
 
     private String primaryCalendarId(CancellationToken cancellationToken) {
+        // 调 CLI
         LarkCliProcessResult result = execute(
                 List.of(
                         cliPath.toString(),
@@ -104,6 +109,7 @@ public final class LarkCliFeishuCalendarGateway implements FeishuCalendarGateway
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 cancellationToken.throwIfCancellationRequested(CancellationPhase.TOOL_EXECUTION);
+                // 执行 飞书 cli 指令
                 LarkCliProcessResult result = processExecutor.execute(argv, stdin, timeout, cancellationToken);
                 if (result.exitCode() != 0) {
                     throw new FeishuCalendarGatewayException(
@@ -156,6 +162,7 @@ public final class LarkCliFeishuCalendarGateway implements FeishuCalendarGateway
 
     private static FeishuCalendarCreateResult parseCreateResult(String stdout) {
         JsonNode event = parseResponse(stdout, "event creation").path("event");
+        // 从 event 中再解析 ID 和 link
         String eventId = nonBlankText(event.path("event_id"))
                 .orElseThrow(() -> invalidResponse("event creation"));
         Optional<String> appLink = nonBlankText(event.path("app_link"));

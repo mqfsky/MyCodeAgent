@@ -75,6 +75,7 @@ public final class ToolRegistry implements ToolExecutor {
             return ToolResult.error("Tool input validation failed: valid result requires normalized input");
         }
 
+        // 获取有效参数
         JsonNode normalizedInput = validation.normalizedInput().get();
 
         try {

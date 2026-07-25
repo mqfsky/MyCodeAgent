@@ -46,14 +46,18 @@ public final class CalendarTimeResolver {
         }
         durationMinutes.ifPresent(CalendarTimeResolver::requirePositiveDuration);
 
+        // 获取当前时间
         ZonedDateTime now = ZonedDateTime.ofInstant(clock.instant(), zoneId);
+        // 返回年月日，支持相对时间与绝对实践的输入
         LocalDate resolvedDate = resolveDate(date, now.toLocalDate());
+        // 解析小时，获取开始时间
         ZonedDateTime start = resolveStrict(resolvedDate, startTime, "start");
         if (!start.isAfter(now)) {
             throw new CalendarTimeResolutionException("start must be strictly in the future");
         }
 
         ZonedDateTime end;
+        // 结束时间存在就用结束时间，否则就用默认时间，30分钟
         if (endTime.isPresent()) {
             end = resolveStrict(resolvedDate, endTime.orElseThrow(), "end");
             if (!end.isAfter(start)) {
@@ -70,7 +74,9 @@ public final class CalendarTimeResolver {
 
     private LocalDate resolveDate(CalendarDateSpec date, LocalDate today) {
         return switch (date) {
+            // 如果是相对实践，明天后天这种，增加偏移量
             case CalendarDateSpec.RelativeDay relativeDay -> today.plusDays(relativeDay.offsetDays());
+            // 如果是日，月
             case CalendarDateSpec.MonthDay monthDay -> resolveMonthDay(monthDay, today);
         };
     }
@@ -104,6 +110,7 @@ public final class CalendarTimeResolver {
     }
 
     private ZonedDateTime resolveStrict(LocalDate date, CalendarClockTime time, String fieldName) {
+        // 解析时间为 24小时制
         int resolvedHour = resolveHour(time);
         LocalDateTime localDateTime = LocalDateTime.of(date, LocalTime.of(resolvedHour, time.minute()));
         ZoneRules rules = zoneId.getRules();
