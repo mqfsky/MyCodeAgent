@@ -15,6 +15,7 @@ import minicode.core.message.ToolResultMessage;
 import minicode.core.message.UserMessage;
 import minicode.core.turn.AgentTurnResult;
 import minicode.core.turn.AgentTurnStopReason;
+import minicode.memory.extraction.MemoryExtractionUpdatedEvent;
 import minicode.permissions.model.PermissionChoice;
 import minicode.permissions.model.PermissionDecision;
 import minicode.permissions.model.PermissionPromptResult;
@@ -86,6 +87,9 @@ public final class RendererTuiShell {
             bridge.attach(this);
         }
         this.state = RenderState.empty().withTranscript(projectSessionHistory());
+        services.startupPlanSummary()
+                .map(TranscriptBlock::assistant)
+                .ifPresent(block -> this.state = this.state.appendTranscript(List.of(block)));
         redraw();
         SubAgentTaskManager taskManager = services.subAgentTaskManager().orElse(null);
         if (taskManager != null) {
@@ -213,6 +217,16 @@ public final class RendererTuiShell {
                         + (finished.error() ? "failed" : "completed");
             };
             appendTranscriptLocked(TranscriptBlock.agentTask(taskId, text));
+            redrawLocked();
+        }
+    }
+
+    /** 记忆更新只追加一条内容无关的通知，不改变主 Turn 状态，也不触发续接 Turn。 */
+    void onMemoryExtractionUpdated(MemoryExtractionUpdatedEvent event) {
+        Objects.requireNonNull(event, "event");
+        synchronized (lock) {
+            appendTranscriptLocked(TranscriptBlock.diagnostic(
+                    "memory: updated " + event.summary()));
             redrawLocked();
         }
     }
@@ -576,13 +590,8 @@ public final class RendererTuiShell {
 
     private void runUserTurnInBackground(UserMessage userMessage) {
         try {
-            List<ChatMessage> history = services.sessionMessages();
-            services.sessionPersistenceRunner().apply(new TurnPersistencePlan(
-                    List.of(new PersistenceAction.AppendMessagesAction(List.of(userMessage)))
-            ));
-            List<ChatMessage> turnMessages = new ArrayList<>(history);
-            turnMessages.add(userMessage);
-            runTurnInBackground(turnMessages);
+            runTurnInBackground(() -> services.conversationTurnService()
+                    .executeUserTurn(userMessage, maxSteps));
         } catch (RuntimeException exception) {
             synchronized (lock) {
                 if (Thread.currentThread() == activeTurn) {
@@ -597,13 +606,10 @@ public final class RendererTuiShell {
         }
     }
 
-    private void runTurnInBackground(List<ChatMessage> turnMessages) {
+    private void runTurnInBackground(java.util.function.Supplier<AgentTurnResult> turn) {
         AgentTurnResult result = null;
         try {
-            // 进入 agent loop
-            result = services.runTurn(services.turnRequest(List.copyOf(turnMessages), maxSteps));
-            // 持久化 session
-            services.sessionPersistenceRunner().apply(result.persistencePlan());
+            result = Objects.requireNonNull(turn, "turn").get();
             // 更新 UI
             synchronized (lock) {
                 if (!realtimeEvents) {
@@ -656,7 +662,8 @@ public final class RendererTuiShell {
     }
 
     private void runNotificationTurnInBackground() {
-        runTurnInBackground(services.sessionMessages());
+        runTurnInBackground(() -> services.conversationTurnService()
+                .executeNotificationTurn(maxSteps));
     }
 
     private void runCompactCommand() {
@@ -674,7 +681,7 @@ public final class RendererTuiShell {
     }
 
     private void runMemoryCommand() {
-        String report = services.memorySnapshot().renderReport(services.cwd());
+        String report = services.memoryReport();
         synchronized (lock) {
             appendTranscriptLocked(TranscriptBlock.assistant(report));
             redrawLocked();

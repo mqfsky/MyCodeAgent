@@ -1,10 +1,11 @@
 package minicode.memory;
 
+import minicode.workspace.ProjectRootLocator;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -50,12 +51,19 @@ public final class LayeredMemoryLoader {
 
     private final int maxPerFileChars;
     private final int maxTotalChars;
+    private final ProjectRootLocator projectRootLocator;
 
     public LayeredMemoryLoader() {
-        this(DEFAULT_MAX_PER_FILE_CHARS, DEFAULT_MAX_TOTAL_CHARS);
+        this(DEFAULT_MAX_PER_FILE_CHARS, DEFAULT_MAX_TOTAL_CHARS, new ProjectRootLocator());
     }
 
     public LayeredMemoryLoader(int maxPerFileChars, int maxTotalChars) {
+        this(maxPerFileChars, maxTotalChars, new ProjectRootLocator());
+    }
+
+    public LayeredMemoryLoader(int maxPerFileChars,
+                               int maxTotalChars,
+                               ProjectRootLocator projectRootLocator) {
         if (maxPerFileChars <= 0) {
             throw new IllegalArgumentException("maxPerFileChars must be positive");
         }
@@ -64,17 +72,21 @@ public final class LayeredMemoryLoader {
         }
         this.maxPerFileChars = maxPerFileChars;
         this.maxTotalChars = maxTotalChars;
+        this.projectRootLocator = Objects.requireNonNull(projectRootLocator, "projectRootLocator");
     }
 
     public MemorySnapshot load(Path home, Path cwd) {
         Path actualHome = Objects.requireNonNull(home, "home").toAbsolutePath().normalize();
         Path actualCwd = Objects.requireNonNull(cwd, "cwd").toAbsolutePath().normalize();
-        Path projectRoot = findProjectRoot(actualCwd);
+        Path projectRoot = projectRootLocator.locate(actualCwd);
+        Path traversalCwd = projectRoot.equals(actualCwd) || actualCwd.startsWith(projectRoot)
+                ? actualCwd
+                : realPath(actualCwd).orElse(actualCwd);
 
         List<MemoryDocument> discovered = new ArrayList<>();
         discoverCandidates(actualHome, GLOBAL_CANDIDATES, MemoryDocument.Scope.GLOBAL, 0, discovered);
 
-        List<Path> projectDirectories = projectDirectories(projectRoot, actualCwd);
+        List<Path> projectDirectories = projectDirectories(projectRoot, traversalCwd);
         for (int depth = 0; depth < projectDirectories.size(); depth++) {
             Path directory = projectDirectories.get(depth);
             MemoryDocument.Scope scope = depth == 0
@@ -255,15 +267,6 @@ public final class LayeredMemoryLoader {
         } catch (IOException | SecurityException exception) {
             return java.util.Optional.empty();
         }
-    }
-
-    private static Path findProjectRoot(Path cwd) {
-        for (Path cursor = cwd; cursor != null; cursor = cursor.getParent()) {
-            if (Files.exists(cursor.resolve(".git"), LinkOption.NOFOLLOW_LINKS)) {
-                return cursor;
-            }
-        }
-        return cwd;
     }
 
     private static List<Path> projectDirectories(Path projectRoot, Path cwd) {

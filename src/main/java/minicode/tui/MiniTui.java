@@ -60,6 +60,7 @@ public final class MiniTui {
             throw new IllegalArgumentException("maxSteps must be positive");
         }
         this.maxSteps = maxSteps;
+        services.startupPlanSummary().ifPresent(this.output::println);
         SubAgentTaskManager taskManager = services.subAgentTaskManager().orElse(null);
         if (taskManager != null) {
             taskManager.setNotificationListener(this::startNotificationTurnIfIdle);
@@ -112,7 +113,7 @@ public final class MiniTui {
             return true;
         }
         if ("/memory".equals(trimmed)) {
-            output.println(services.memorySnapshot().renderReport(services.cwd()));
+            output.println(services.memoryReport());
             return true;
         }
         if ("/init".equals(trimmed)) {
@@ -137,20 +138,11 @@ public final class MiniTui {
     }
 
     private void runUserTurn(String line) {
-        // 2. 加载历史 messages：从最近一次 compact boundary 之后恢复可喂给模型的上下文。
-        List<ChatMessage> history = services.sessionMessages();
-
-        // 3. 把本轮输入包装成 UserMessage，并先追加到 session，确保用户输入可恢复。
         UserMessage userMessage = new UserMessage(line);
         output.println("user: " + userMessage.content());
-        services.sessionPersistenceRunner().apply(new TurnPersistencePlan(
-                List.of(new PersistenceAction.AppendMessagesAction(List.of(userMessage)))
-        ));
-
-        // 4. 构造本轮 messages：历史上下文 + 本轮用户输入；turnRequest 会再补 fresh system prompt。
-        List<ChatMessage> turnMessages = new java.util.ArrayList<>(history);
-        turnMessages.add(userMessage);
-        runAndPersistTurn(turnMessages);
+        AgentTurnResult result = services.conversationTurnService()
+                .executeUserTurn(userMessage, maxSteps);
+        renderTurnResult(result);
     }
 
     /** 后台任务完成且父 Agent 空闲时，自动启动一轮结果汇总。 */
@@ -175,20 +167,15 @@ public final class MiniTui {
 
     private void runNotificationTurn() {
         try {
-            runAndPersistTurn(services.sessionMessages());
+            AgentTurnResult result = services.conversationTurnService()
+                    .executeNotificationTurn(maxSteps);
+            renderTurnResult(result);
         } catch (RuntimeException exception) {
             output.println("notification_turn_failed: "
                     + Objects.toString(exception.getMessage(), "unknown error"));
         } finally {
             finishTurn();
         }
-    }
-
-    private void runAndPersistTurn(List<ChatMessage> messages) {
-        AgentTurnResult result = services.runTurn(
-                services.turnRequest(List.copyOf(messages), maxSteps));
-        services.sessionPersistenceRunner().apply(result.persistencePlan());
-        renderTurnResult(result);
     }
 
     private boolean beginTurn() {

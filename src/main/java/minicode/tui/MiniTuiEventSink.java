@@ -8,13 +8,16 @@ import minicode.core.message.AssistantMessage;
 import minicode.core.message.AssistantProgressMessage;
 import minicode.core.message.ChatMessage;
 import minicode.core.message.ToolResultMessage;
+import minicode.memory.extraction.MemoryExtractionEventSink;
+import minicode.memory.extraction.MemoryExtractionUpdatedEvent;
 
 import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
-public final class MiniTuiEventSink implements AgentEventSink, AgentTaskEventSink {
+public final class MiniTuiEventSink
+        implements AgentEventSink, AgentTaskEventSink, MemoryExtractionEventSink {
     private final PrintWriter out;
     private final AgentEventSink delegate;
 
@@ -45,6 +48,12 @@ public final class MiniTuiEventSink implements AgentEventSink, AgentTaskEventSin
                     + " tool=" + finished.toolName()
                     + " status=" + (finished.error() ? "error" : "completed"));
         }
+    }
+
+    @Override
+    public void onUpdated(MemoryExtractionUpdatedEvent event) {
+        Objects.requireNonNull(event, "event");
+        out.println("memory: updated " + event.summary());
     }
 
     private void render(AgentEvent event) {

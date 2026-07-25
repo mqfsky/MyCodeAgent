@@ -1,9 +1,10 @@
 package minicode.init;
 
+import minicode.workspace.ProjectRootLocator;
+
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -23,6 +24,15 @@ public final class ProjectStructureDetector {
             ".git", ".gradle", ".idea", ".codeagent", ".mini-code",
             "target", "build", "out", "node_modules"
     );
+    private final ProjectRootLocator projectRootLocator;
+
+    public ProjectStructureDetector() {
+        this(new ProjectRootLocator());
+    }
+
+    public ProjectStructureDetector(ProjectRootLocator projectRootLocator) {
+        this.projectRootLocator = Objects.requireNonNull(projectRootLocator, "projectRootLocator");
+    }
 
     /**
      * 从当前工作目录确定项目根目录并扫描项目结构。
@@ -44,14 +54,15 @@ public final class ProjectStructureDetector {
         return detection.toProjectStructure();
     }
 
-    private static Path findProjectRoot(Path cwd) {
+    private Path findProjectRoot(Path cwd) {
+        var gitRoot = projectRootLocator.findGitRoot(cwd);
+        if (gitRoot.isPresent()) {
+            return gitRoot.orElseThrow();
+        }
         Path nearestBuildRoot = null;
         for (Path cursor = cwd; cursor != null; cursor = cursor.getParent()) {
             if (nearestBuildRoot == null && containsBuildMarker(cursor)) {
                 nearestBuildRoot = cursor;
-            }
-            if (Files.exists(cursor.resolve(".git"), LinkOption.NOFOLLOW_LINKS)) {
-                return cursor;
             }
         }
         return nearestBuildRoot == null ? cwd : nearestBuildRoot;

@@ -21,24 +21,27 @@ import java.util.Optional;
  * @param providerTimeout provider 请求超时时间
  * @param sourceSummary 配置来源摘要
  * @param mcpServers MCP server 配置列表
+ * @param integrations 用户级外部集成配置
+ * @param memory 用户级个人记忆配置
  */
 public record RuntimeConfig(ProviderKind provider, String model, String baseUrl, Optional<String> apiKey,
                             Optional<String> authToken, Optional<Integer> maxOutputTokens,
                             Optional<Integer> contextWindow, Optional<Integer> maxSteps,
                             Duration providerTimeout, String sourceSummary, Map<String, McpServerConfig> mcpServers,
-                            IntegrationsConfig integrations) {
+                            IntegrationsConfig integrations, MemoryConfig memory) {
     public RuntimeConfig(ProviderKind provider, String model, String baseUrl, Optional<String> apiKey,
                          Optional<String> authToken, Optional<Integer> maxOutputTokens,
                          Optional<Integer> contextWindow, String sourceSummary) {
         this(provider, model, baseUrl, apiKey, authToken, maxOutputTokens, contextWindow, Optional.empty(),
-                Duration.ofSeconds(300), sourceSummary, Map.of(), IntegrationsConfig.empty());
+                Duration.ofSeconds(300), sourceSummary, Map.of(), IntegrationsConfig.empty(),
+                MemoryConfig.disabled());
     }
 
     public RuntimeConfig(ProviderKind provider, String model, String baseUrl, Optional<String> apiKey,
                          Optional<String> authToken, Optional<Integer> maxOutputTokens,
                          Optional<Integer> contextWindow, Duration providerTimeout, String sourceSummary) {
         this(provider, model, baseUrl, apiKey, authToken, maxOutputTokens, contextWindow, Optional.empty(),
-                providerTimeout, sourceSummary, Map.of(), IntegrationsConfig.empty());
+                providerTimeout, sourceSummary, Map.of(), IntegrationsConfig.empty(), MemoryConfig.disabled());
     }
 
     public RuntimeConfig(ProviderKind provider, String model, String baseUrl, Optional<String> apiKey,
@@ -46,7 +49,8 @@ public record RuntimeConfig(ProviderKind provider, String model, String baseUrl,
                          Optional<Integer> contextWindow, String sourceSummary,
                          Map<String, McpServerConfig> mcpServers) {
         this(provider, model, baseUrl, apiKey, authToken, maxOutputTokens, contextWindow, Optional.empty(),
-                Duration.ofSeconds(300), sourceSummary, mcpServers, IntegrationsConfig.empty());
+                Duration.ofSeconds(300), sourceSummary, mcpServers, IntegrationsConfig.empty(),
+                MemoryConfig.disabled());
     }
 
     public RuntimeConfig(ProviderKind provider, String model, String baseUrl, Optional<String> apiKey,
@@ -54,7 +58,7 @@ public record RuntimeConfig(ProviderKind provider, String model, String baseUrl,
                          Optional<Integer> contextWindow, Optional<Integer> maxSteps,
                          Duration providerTimeout, String sourceSummary, Map<String, McpServerConfig> mcpServers) {
         this(provider, model, baseUrl, apiKey, authToken, maxOutputTokens, contextWindow, maxSteps,
-                providerTimeout, sourceSummary, mcpServers, IntegrationsConfig.empty());
+                providerTimeout, sourceSummary, mcpServers, IntegrationsConfig.empty(), MemoryConfig.disabled());
     }
 
     public RuntimeConfig(ProviderKind provider, String model, String baseUrl, Optional<String> apiKey,
@@ -62,6 +66,15 @@ public record RuntimeConfig(ProviderKind provider, String model, String baseUrl,
                          Optional<Integer> contextWindow, Optional<Integer> maxSteps,
                          Duration providerTimeout, String sourceSummary, Map<String, McpServerConfig> mcpServers,
                          IntegrationsConfig integrations) {
+        this(provider, model, baseUrl, apiKey, authToken, maxOutputTokens, contextWindow, maxSteps,
+                providerTimeout, sourceSummary, mcpServers, integrations, MemoryConfig.disabled());
+    }
+
+    public RuntimeConfig(ProviderKind provider, String model, String baseUrl, Optional<String> apiKey,
+                         Optional<String> authToken, Optional<Integer> maxOutputTokens,
+                         Optional<Integer> contextWindow, Optional<Integer> maxSteps,
+                         Duration providerTimeout, String sourceSummary, Map<String, McpServerConfig> mcpServers,
+                         IntegrationsConfig integrations, MemoryConfig memory) {
         this.provider = Objects.requireNonNull(provider, "provider");
         this.model = requireText(model, "model");
         this.baseUrl = requireText(baseUrl, "baseUrl");
@@ -74,6 +87,7 @@ public record RuntimeConfig(ProviderKind provider, String model, String baseUrl,
         this.sourceSummary = requireText(sourceSummary, "sourceSummary");
         this.mcpServers = Map.copyOf(Objects.requireNonNull(mcpServers, "mcpServers"));
         this.integrations = Objects.requireNonNull(integrations, "integrations");
+        this.memory = Objects.requireNonNull(memory, "memory");
     }
 
     private static String requireText(String value, String name) {

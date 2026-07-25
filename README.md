@@ -14,6 +14,7 @@ CodeAgent 是一个使用 Java 21 编写的、本地优先个人助手，软件�
 - 使用 append-only JSONL 保存会话，支持列出、重命名、恢复和分叉会话。
 - 支持手动 `/compact` 和自动上下文压缩，避免长对话无限膨胀。
 - 支持 `CODEAGENT.md`、`AGENTS.md` 和 `.codeagent/rules/*.md` 分层项目记忆。
+- 可选启用异步个人记忆：提取长期用户信息、项目工作偏好和未来计划，并在启动时展示今日与逾期计划。
 - 支持从项目级、用户级和兼容目录发现 `SKILL.md`，按需加载完整 Skill。
 - 支持通过 stdio 或 Streamable HTTP 连接 MCP Server，并把远端能力注册为 Agent 工具。
 - 可选接入个人飞书主日历，以强类型工具创建私密日程，并在每次外部写入前展示确认信息。
@@ -132,6 +133,7 @@ export ANTHROPIC_API_KEY="your-api-key"
 - `providerTimeoutSeconds`：模型请求超时时间，默认 300 秒。
 - `mcpServers`：MCP Server 配置。
 - `integrations.feishuCalendar`：用户级飞书日历创建工具配置。
+- `memory`：用户级自动个人记忆配置。
 
 配置加载优先级为：
 
@@ -247,7 +249,7 @@ java -jar target/codeagent.jar --resume <session-id>
 | 命令 | 作用 |
 | --- | --- |
 | `/init` | 检测项目结构，生成 `CODEAGENT.md` 和 `.codeagent/rules/*.md` |
-| `/memory` | 查看当前会注入系统提示词的项目记忆文件 |
+| `/memory` | 查看项目记忆及自动个人记忆的路径、解析和队列状态（不打印个人记忆正文） |
 | `/skill` | 列出本次启动时发现的 Skills |
 | `/compact` | 手动压缩当前会话上下文 |
 | `exit`、`quit` | 退出 CodeAgent |
@@ -295,6 +297,62 @@ CODEAGENT.md
 已经存在的文件不会被覆盖。生成后应根据项目实际情况调整其中的构建命令、代码规范和验证要求。
 
 CodeAgent 还兼容 `AGENTS.md`、目录级本地规则以及 `.mini-code/rules/*.md`。记忆文件支持通过单独一行 `@relative/path.md` 引用同一安全边界内的其他 Markdown 文件。
+
+## 自动个人记忆（可选）
+
+自动个人记忆默认关闭，只能在用户级 `~/.codeagent/settings.json` 中开启，项目配置不能替你启用：
+
+```json
+{
+  "memory": {
+    "enabled": true,
+    "timezone": "Asia/Shanghai"
+  }
+}
+```
+
+开启后，每个包含新用户输入的主 Agent turn 在完成并持久化后，会把最近五个用户 turn 的受限对话快照交给一个异步专用 Agent。主对话不会等待它；进程内最多运行一个提取任务，其余任务按提交顺序排队。专用 Agent 只能调用 `read_memory_file` 和 `write_memory_file`，不能使用普通文件、命令、MCP、飞书、Skill、`ask_user` 或公开子 Agent 工具。
+
+提取范围固定为：
+
+- `user`：用户明确表达的身份、职责、长期目标和知识背景。
+- `feedback`：用户对 Agent 工作方式的明确纠正、偏好或希望继续保持的做法。
+- `plan`：未来日程和计划，包括无具体时间、日期待定、完成或取消状态。
+
+它不是对话摘要，不记录可从源码得到的架构、文件路径、代码规范、Git 历史、调试步骤、修复过程或当前任务进度，也不会根据表现推断用户身份和水平。没有候选内容时不会调用任何记忆工具；已有相同内容时只读取不改写。只有写工具确认文件确实变化，界面才显示一条简短更新通知。
+
+三个文件的位置是：
+
+```text
+~/.codeagent/memory/user.md
+~/.codeagent/memory/plan.md
+<project-root>/.codeagent/memory/feedback.md
+```
+
+`feedback.md` 是当前项目的本地个人偏好。第一次写入前，CodeAgent 会把它加入仓库本地 `.git/info/exclude`，不会修改项目的 `.gitignore`；如果该文件已经被 Git 跟踪，则会拒绝自动覆盖。
+
+`plan.md` 使用可手工编辑的 Markdown：
+
+```markdown
+# Plan
+
+## 2026-07-25
+
+- [ ] [09:00] 看八股文
+- [ ] [时间待定] 完善简历
+- [x] [全天] 参加技术大会
+- [-] [20:00] 已取消的数据库复习
+
+## 日期待定
+
+- [ ] 整理 Agent 学习路线
+```
+
+其中 `[ ]`、`[x]`、`[-]` 分别表示未完成、已完成和已取消。时间到达不会自动把计划改成已完成；只有用户明确说明完成、取消或改期后，提取 Agent 才会更新状态。
+
+`user.md` 和当前项目的 `feedback.md` 会在每次主模型请求前重新读取，作为可能过期的参考信息；当前请求、项目明确规则、权限与安全边界始终优先。`plan.md` 不会整体注入系统提示词。用户询问某天或日期待定的日程时，主 Agent 通过只读 `query_plan` 查询。启动 CodeAgent 时还会直接展示今天未完成、逾期未完成和日期待定的计划统计，这一步不调用模型、不写 session，也不触发新的提取任务。
+
+`/memory` 会展示功能状态、三个固定路径、文件存在/大小/解析状态、提取队列状态和计划统计，但不会打印个人记忆正文。
 
 ## Skills
 
@@ -414,6 +472,9 @@ CodeAgent 默认把运行数据放在 `~/.codeagent/`：
 ~/.codeagent/
 ├── settings.json       # 用户级模型和 MCP 配置
 ├── permissions.json    # 持久化权限决策
+├── memory/
+│   ├── user.md         # 用户身份、职责、长期目标和知识背景
+│   └── plan.md         # 日程与计划
 ├── sessions/           # 按 workspace 隔离的 JSONL 会话
 ├── skills/             # 用户级 Skills
 └── tool-results/       # 被上下文管理器外置的大型工具结果
@@ -426,6 +487,8 @@ CodeAgent 默认把运行数据放在 `~/.codeagent/`：
 ├── CODEAGENT.md
 └── .codeagent/
     ├── settings.json
+    ├── memory/
+    │   └── feedback.md  # 当前项目下的个人工作偏好，本地 Git exclude
     ├── rules/
     └── skills/
 ```

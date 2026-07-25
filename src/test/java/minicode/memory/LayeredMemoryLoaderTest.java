@@ -56,6 +56,29 @@ class LayeredMemoryLoaderTest {
     }
 
     @Test
+    void symbolicLinkCwdLoadsTheRealRepositoryHierarchy() throws Exception {
+        Path home = Files.createDirectories(tempDir.resolve("home"));
+        Path outer = Files.createDirectories(tempDir.resolve("outer"));
+        Files.createDirectories(outer.resolve(".git"));
+        Path realRoot = Files.createDirectories(tempDir.resolve("real-project"));
+        Files.createDirectories(realRoot.resolve(".git"));
+        Path nested = Files.createDirectories(realRoot.resolve("services/api"));
+        Path rootMemory = write(realRoot, "AGENTS.md", "real-root-memory");
+        Path serviceMemory = write(realRoot.resolve("services"), "AGENTS.md", "real-service-memory");
+        Path linkedCwd = outer.resolve("linked-api");
+        try {
+            Files.createSymbolicLink(linkedCwd, nested);
+        } catch (UnsupportedOperationException exception) {
+            return;
+        }
+
+        MemorySnapshot snapshot = new LayeredMemoryLoader().load(home, linkedCwd);
+
+        assertEquals(List.of(rootMemory.toRealPath(), serviceMemory.toRealPath()),
+                paths(snapshot.documents()));
+    }
+
+    @Test
     void usesStableCandidateOrderWithinEveryDirectory() throws Exception {
         Path home = Files.createDirectories(tempDir.resolve("home"));
         Path projectRoot = Files.createDirectories(tempDir.resolve("project"));

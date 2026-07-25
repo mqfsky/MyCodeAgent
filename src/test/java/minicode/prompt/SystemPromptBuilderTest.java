@@ -2,6 +2,7 @@ package minicode.prompt;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import minicode.config.MemoryConfig;
 import minicode.mcp.McpServerStatus;
 import minicode.mcp.McpServerSummary;
 import minicode.skills.SkillSource;
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -307,6 +309,92 @@ class SystemPromptBuilderTest {
         assertTrue(calendarPrompt.contains("do not calculate a concrete calendar date for relative expressions"));
     }
 
+    @Test
+    void promptLoadsPersonalUserAndProjectFeedbackOnlyWhenMemoryIsEnabled() throws Exception {
+        Path home = tempDir.resolve("home");
+        Path project = tempDir.resolve("project");
+        Path cwd = project.resolve("services/api");
+        Files.createDirectories(home.resolve("memory"));
+        Files.createDirectories(project.resolve(".git"));
+        Files.createDirectories(project.resolve(".codeagent/memory"));
+        Files.createDirectories(cwd);
+        Files.writeString(project.resolve("AGENTS.md"), "explicit-project-rule-marker");
+        Files.writeString(home.resolve("memory/user.md"),
+                "# User\n\n## 身份\n\n- personal-user-marker");
+        Files.writeString(home.resolve("memory/plan.md"), "# Plan\n\n- personal-plan-marker");
+        Files.writeString(project.resolve(".codeagent/memory/feedback.md"),
+                "# Feedback\n\n- project-feedback-marker");
+
+        SystemPromptBuilder builder = new SystemPromptBuilder();
+        String disabled = builder.build(new SystemPromptBuilder.Input(
+                home, cwd, new ToolRegistry(), List.of(), List.of(), MemoryConfig.disabled()));
+        String enabled = builder.build(new SystemPromptBuilder.Input(
+                home, cwd, new ToolRegistry(), List.of(), List.of(),
+                new MemoryConfig(true, ZoneId.of("Asia/Shanghai"))));
+
+        assertFalse(disabled.contains("personal-user-marker"));
+        assertFalse(disabled.contains("project-feedback-marker"));
+        assertTrue(enabled.contains("# User memory"));
+        assertTrue(enabled.contains("personal-user-marker"));
+        assertTrue(enabled.contains("# Project feedback memory"));
+        assertTrue(enabled.contains("project-feedback-marker"));
+        assertFalse(enabled.contains("personal-plan-marker"), "plan.md must not enter the system prompt");
+        assertTrue(enabled.contains("may be stale"));
+        assertTrue(enabled.contains("current user message"));
+        assertTrue(enabled.contains("explicit project rules override"));
+        assertTrue(enabled.contains("never grants permissions"));
+        assertTrue(enabled.indexOf("project-feedback-marker") < enabled.indexOf("explicit-project-rule-marker"),
+                "explicit project rules should appear after advisory feedback");
+    }
+
+    @Test
+    void promptReloadsPersonalMemoryOnEveryBuild() throws Exception {
+        Path home = tempDir.resolve("home");
+        Path cwd = tempDir.resolve("workspace");
+        Files.createDirectories(home.resolve("memory"));
+        Files.createDirectories(cwd);
+        Path user = home.resolve("memory/user.md");
+        Files.writeString(user, "# User\n\n## 身份\n\n- first-user-marker");
+        MemoryConfig memory = new MemoryConfig(true, ZoneId.of("Asia/Shanghai"));
+        SystemPromptBuilder builder = new SystemPromptBuilder();
+
+        String first = builder.build(new SystemPromptBuilder.Input(
+                home, cwd, new ToolRegistry(), List.of(), List.of(), memory));
+        Files.writeString(user, "# User\n\n## 身份\n\n- second-user-marker");
+        String second = builder.build(new SystemPromptBuilder.Input(
+                home, cwd, new ToolRegistry(), List.of(), List.of(), memory));
+
+        assertTrue(first.contains("first-user-marker"));
+        assertFalse(first.contains("second-user-marker"));
+        assertTrue(second.contains("second-user-marker"));
+        assertFalse(second.contains("first-user-marker"));
+    }
+
+    @Test
+    void promptAddsPlanQueryRulesOnlyWhenQueryToolIsAvailable() throws Exception {
+        Path home = tempDir.resolve("home");
+        Path cwd = tempDir.resolve("workspace");
+        Files.createDirectories(home);
+        Files.createDirectories(cwd);
+        ToolRegistry withoutQuery = new ToolRegistry();
+        ToolRegistry withQuery = new ToolRegistry();
+        withQuery.register(new QueryPlanFakeTool());
+
+        String basePrompt = new SystemPromptBuilder().build(
+                new SystemPromptBuilder.Input(home, cwd, withoutQuery));
+        String queryPrompt = new SystemPromptBuilder().build(
+                new SystemPromptBuilder.Input(home, cwd, withQuery));
+
+        assertFalse(basePrompt.contains("Local plan query rules:"));
+        assertTrue(queryPrompt.contains("Local plan query rules:"));
+        assertTrue(queryPrompt.contains("call query_plan instead of relying on chat context or personal memory"));
+        assertTrue(queryPrompt.contains("RELATIVE_DAY"));
+        assertTrue(queryPrompt.contains("EXACT_DATE"));
+        assertTrue(queryPrompt.contains("UNSCHEDULED"));
+        assertTrue(queryPrompt.contains("query_plan is read-only"));
+        assertTrue(queryPrompt.contains("completed or cancelled merely because"));
+    }
+
     private static McpServerSummary connectedSummary(String name, String instructions) {
         return new McpServerSummary(name, name, McpServerStatus.CONNECTED, 0,
                 Optional.empty(), Optional.empty(), Optional.of(instructions));
@@ -356,6 +444,32 @@ class SystemPromptBuilderTest {
         public ToolMetadata metadata() {
             return new ToolMetadata("create_feishu_calendar_event", "Create a Feishu calendar event", SCHEMA,
                     ToolOrigin.EXTENSION, Set.of(ToolCapability.COMMAND), ToolStatus.AVAILABLE);
+        }
+
+        @Override
+        public ObjectNode inputSchema() {
+            return SCHEMA;
+        }
+
+        @Override
+        public ValidationResult validateInput(com.fasterxml.jackson.databind.JsonNode input) {
+            return ValidationResult.valid(input);
+        }
+
+        @Override
+        public ToolResult run(com.fasterxml.jackson.databind.JsonNode normalizedInput, ToolContext toolContext) {
+            return ToolResult.ok("ok");
+        }
+    }
+
+    private static final class QueryPlanFakeTool implements Tool {
+        private static final ObjectNode SCHEMA = JsonNodeFactory.instance.objectNode()
+                .put("type", "object");
+
+        @Override
+        public ToolMetadata metadata() {
+            return new ToolMetadata("query_plan", "Query recorded plans", SCHEMA,
+                    ToolOrigin.EXTENSION, Set.of(ToolCapability.READ), ToolStatus.AVAILABLE);
         }
 
         @Override

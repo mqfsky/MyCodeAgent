@@ -23,6 +23,7 @@ import minicode.context.stats.ContextStatsCalculator;
 import minicode.context.stats.ModelContextWindow;
 import minicode.config.ProviderKind;
 import minicode.config.FeishuCalendarConfig;
+import minicode.config.MemoryConfig;
 import minicode.config.RuntimeConfig;
 import minicode.core.event.AgentEventSink;
 import minicode.core.loop.AgentLoop;
@@ -47,6 +48,19 @@ import minicode.init.ProjectInitializer;
 import minicode.mcp.McpRuntime;
 import minicode.mcp.McpServerSummary;
 import minicode.memory.MemorySnapshot;
+import minicode.memory.MemoryMarkdownValidator;
+import minicode.memory.MarkdownMemoryStore;
+import minicode.memory.MemoryPathResolver;
+import minicode.memory.PersonalMemoryReport;
+import minicode.memory.PlanDateResolver;
+import minicode.memory.PlanMarkdownParser;
+import minicode.memory.StartupPlanSummary;
+import minicode.memory.extraction.MemoryExtractionStatus;
+import minicode.memory.extraction.MemoryExtractionSubmitter;
+import minicode.memory.extraction.MemoryExtractionAgent;
+import minicode.memory.extraction.MemoryExtractionCoordinator;
+import minicode.memory.extraction.MemoryExtractionEventSink;
+import minicode.memory.extraction.MemoryExtractionPrompt;
 import minicode.mcp.McpToolHydrator;
 import minicode.permissions.api.PermissionPromptHandler;
 import minicode.permissions.api.PermissionService;
@@ -77,6 +91,7 @@ import minicode.tools.builtin.ReadFileTool;
 import minicode.tools.builtin.RunCommandTool;
 import minicode.tools.builtin.WriteFileTool;
 import minicode.tools.extension.CreateFeishuCalendarEventTool;
+import minicode.tools.memory.QueryPlanTool;
 import minicode.tools.registry.ToolRegistry;
 import minicode.tools.result.ToolResultStorage;
 import minicode.workspace.WorkspacePathResolver;
@@ -114,6 +129,7 @@ import java.util.function.Supplier;
  * @param sessionId 当前会话 id
  * @param runtimeConfig 运行配置；为空表示测试或无配置路径
  * @param subAgentTaskManager 后台子 Agent 管理器；手工构造旧服务时为空
+     * @param memoryExtractionCoordinator 自动记忆单工作线程协调器；功能关闭或旧构造路径时为空
  */
 public record ApplicationServices(ToolRegistry toolRegistry,
                                   PermissionService permissionService,
@@ -133,7 +149,8 @@ public record ApplicationServices(ToolRegistry toolRegistry,
                                   Path cwd,
                                   String sessionId,
                                   Optional<RuntimeConfig> runtimeConfig,
-                                  Optional<SubAgentTaskManager> subAgentTaskManager) {
+                                  Optional<SubAgentTaskManager> subAgentTaskManager,
+                                  Optional<MemoryExtractionCoordinator> memoryExtractionCoordinator) {
     private static final Duration MODEL_METADATA_TIMEOUT = Duration.ofSeconds(3);
     private static final int LARGE_TOOL_RESULT_THRESHOLD_CHARS = 200_000;
     private static final int TOOL_RESULT_BATCH_BUDGET_CHARS = 400_000;
@@ -158,7 +175,8 @@ public record ApplicationServices(ToolRegistry toolRegistry,
                                String sessionId) {
         this(toolRegistry, permissionService, contextManager, sessionStore, sessionPersistenceRunner, agentLoop,
                 modelAdapter, compactService, systemPromptBuilder, workspacePathResolver, skillRegistry, mcpRuntime,
-                permissionStore, permissionStorePath, home, cwd, sessionId, Optional.empty(), Optional.empty());
+                permissionStore, permissionStorePath, home, cwd, sessionId, Optional.empty(), Optional.empty(),
+                Optional.empty());
     }
 
     /** 保留引入多 Agent 之前的标准构造方法，兼容现有测试和嵌入调用方。 */
@@ -182,7 +200,34 @@ public record ApplicationServices(ToolRegistry toolRegistry,
                                Optional<RuntimeConfig> runtimeConfig) {
         this(toolRegistry, permissionService, contextManager, sessionStore, sessionPersistenceRunner, agentLoop,
                 modelAdapter, compactService, systemPromptBuilder, workspacePathResolver, skillRegistry, mcpRuntime,
-                permissionStore, permissionStorePath, home, cwd, sessionId, runtimeConfig, Optional.empty());
+                permissionStore, permissionStorePath, home, cwd, sessionId, runtimeConfig, Optional.empty(),
+                Optional.empty());
+    }
+
+    /** 保留加入自动记忆协调器之前的完整构造签名。 */
+    public ApplicationServices(ToolRegistry toolRegistry,
+                               PermissionService permissionService,
+                               ContextManager contextManager,
+                               SessionStore sessionStore,
+                               SessionPersistenceRunner sessionPersistenceRunner,
+                               AgentLoop agentLoop,
+                               ModelAdapter modelAdapter,
+                               CompactService compactService,
+                               SystemPromptBuilder systemPromptBuilder,
+                               WorkspacePathResolver workspacePathResolver,
+                               SkillRegistry skillRegistry,
+                               McpRuntime mcpRuntime,
+                               PermissionStore permissionStore,
+                               Path permissionStorePath,
+                               Path home,
+                               Path cwd,
+                               String sessionId,
+                               Optional<RuntimeConfig> runtimeConfig,
+                               Optional<SubAgentTaskManager> subAgentTaskManager) {
+        this(toolRegistry, permissionService, contextManager, sessionStore, sessionPersistenceRunner, agentLoop,
+                modelAdapter, compactService, systemPromptBuilder, workspacePathResolver, skillRegistry, mcpRuntime,
+                permissionStore, permissionStorePath, home, cwd, sessionId, runtimeConfig, subAgentTaskManager,
+                Optional.empty());
     }
 
     public ApplicationServices {
@@ -207,6 +252,8 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         }
         runtimeConfig = Objects.requireNonNull(runtimeConfig, "runtimeConfig");
         subAgentTaskManager = Objects.requireNonNull(subAgentTaskManager, "subAgentTaskManager");
+        memoryExtractionCoordinator = Objects.requireNonNull(
+                memoryExtractionCoordinator, "memoryExtractionCoordinator");
     }
 
     /**
@@ -318,6 +365,21 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         runtimeConfig.flatMap(config -> config.integrations().feishuCalendar())
                 .filter(FeishuCalendarConfig::enabled)
                 .ifPresent(config -> registerFeishuCalendarTool(registry, permissionService, config));
+        MemoryConfig memoryConfig = runtimeConfig.map(RuntimeConfig::memory).orElseGet(MemoryConfig::disabled);
+        Optional<MarkdownMemoryStore> personalMemoryStore;
+        if (memoryConfig.enabled()) {
+            MarkdownMemoryStore memoryStore = new MarkdownMemoryStore(new MemoryPathResolver(actualHome, actualCwd));
+            personalMemoryStore = Optional.of(memoryStore);
+            registry.register(new QueryPlanTool(
+                    memoryStore,
+                    new PlanMarkdownParser(),
+                    new PlanDateResolver(
+                            java.time.Clock.system(memoryConfig.timezone()),
+                            memoryConfig.timezone())
+            ));
+        } else {
+            personalMemoryStore = Optional.empty();
+        }
 
         // 这个 config 目前是配置文件，目前配置文件中没有配 mcpserver，mcpruntime 不生效
         // TODO 配置 MCP
@@ -408,10 +470,21 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         } else {
             agentLoop = new AgentLoop(modelAdapter, eventSink, registry, contextManager, turnMessageSource);
         }
+        Optional<MemoryExtractionCoordinator> memoryCoordinator = personalMemoryStore.map(memoryStore -> {
+            MemoryExtractionEventSink memoryEventSink = eventSink instanceof MemoryExtractionEventSink sink
+                    ? sink
+                    : MemoryExtractionEventSink.noOp();
+            return new MemoryExtractionCoordinator(
+                    new MemoryExtractionAgent(
+                            childModelAdapterFactory,
+                            memoryStore,
+                            new MemoryExtractionPrompt(memoryConfig.timezone())),
+                    memoryEventSink);
+        });
         return new ApplicationServices(registry, permissionService, contextManager, sessionStore,
                 persistenceRunner, agentLoop, modelAdapter, compactService, new SystemPromptBuilder(), workspacePathResolver,
                 skillRegistry, mcpRuntime, permissionStore, permissionStorePath, actualHome,
-                actualCwd, sessionId, runtimeConfig, Optional.of(taskManager));
+                actualCwd, sessionId, runtimeConfig, Optional.of(taskManager), memoryCoordinator);
     }
 
     private static RuntimeModelAdapterFactory
@@ -561,6 +634,23 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         return sessionStore.loadMessagesSinceLatestCompactBoundary(sessionId, cwd.toString());
     }
 
+    /** 两套 TUI 共用的用户/通知 Turn 执行与持久化边界。 */
+    public ConversationTurnService conversationTurnService() {
+        return new ConversationTurnService(
+                this::sessionMessages,
+                sessionPersistenceRunner::apply,
+                this::turnRequest,
+                this::runTurn,
+                memoryExtractionCoordinator
+                        .<MemoryExtractionSubmitter>map(coordinator -> coordinator)
+                        .orElseGet(MemoryExtractionSubmitter::disabled),
+                memoryConfig(),
+                cwd,
+                sessionId,
+                java.time.Clock.systemUTC()
+        );
+    }
+
     /**
      * 重新读取当前工作区的分层记忆，供本地命令展示或下一轮 Prompt 构建使用。
      *
@@ -568,6 +658,46 @@ public record ApplicationServices(ToolRegistry toolRegistry,
      */
     public MemorySnapshot memorySnapshot() {
         return systemPromptBuilder.loadMemory(home, cwd);
+    }
+
+    /** 当前用户级自动记忆配置；嵌入式旧构造路径默认关闭。 */
+    public MemoryConfig memoryConfig() {
+        return runtimeConfig.map(RuntimeConfig::memory).orElseGet(MemoryConfig::disabled);
+    }
+
+    /**
+     * 在进入输入循环前直接读取本地计划并生成提醒。该路径不调用模型、不写会话，
+     * 也不会提交记忆提取任务。
+     */
+    public Optional<String> startupPlanSummary() {
+        MemoryConfig config = memoryConfig();
+        if (!config.enabled()) {
+            return Optional.empty();
+        }
+        MarkdownMemoryStore store = new MarkdownMemoryStore(new MemoryPathResolver(home, cwd));
+        StartupPlanSummary summary = new StartupPlanSummary(
+                store,
+                new PlanMarkdownParser(),
+                java.time.Clock.system(config.timezone()));
+        return Optional.of(summary.render());
+    }
+
+    /** `/memory` 的元数据报告；个人记忆正文不会直接打印到终端。 */
+    public String memoryReport() {
+        MemoryConfig config = memoryConfig();
+        MemoryPathResolver paths = new MemoryPathResolver(home, cwd);
+        MarkdownMemoryStore store = new MarkdownMemoryStore(paths);
+        String personal = new PersonalMemoryReport(
+                config,
+                paths,
+                store,
+                new MemoryMarkdownValidator(),
+                new PlanMarkdownParser(),
+                java.time.Clock.system(config.timezone())
+        ).render(memoryExtractionCoordinator
+                .map(MemoryExtractionCoordinator::status)
+                .orElseGet(MemoryExtractionStatus::idle));
+        return personal + "\n\n" + memorySnapshot().renderReport(cwd);
     }
 
     /**
@@ -606,9 +736,13 @@ public record ApplicationServices(ToolRegistry toolRegistry,
 
     public void close() {
         try {
-            subAgentTaskManager.ifPresent(SubAgentTaskManager::close);
+            memoryExtractionCoordinator.ifPresent(MemoryExtractionCoordinator::close);
         } finally {
-            mcpRuntime.close();
+            try {
+                subAgentTaskManager.ifPresent(SubAgentTaskManager::close);
+            } finally {
+                mcpRuntime.close();
+            }
         }
     }
 
@@ -645,7 +779,8 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         // 先根据当前应用服务状态生成最新 system prompt，确保模型看到的是当前工具/技能/MCP 信息。
         refreshed.add(new SystemMessage(systemPromptBuilder.build(
                 new SystemPromptBuilder.Input(home, cwd, toolRegistry, skillRegistry.summaries(),
-                        mcpRuntime.summaries())
+                        mcpRuntime.summaries(),
+                        runtimeConfig.map(RuntimeConfig::memory).orElseGet(MemoryConfig::disabled))
         )));
 
         // 再追加历史中的普通对话消息；旧 SystemMessage 会被跳过，避免重复或过期。

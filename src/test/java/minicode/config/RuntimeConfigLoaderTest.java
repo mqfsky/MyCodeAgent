@@ -524,4 +524,119 @@ class RuntimeConfigLoaderTest {
 
         assertTrue(exception.getMessage().contains("integrations.feishuCalendar"));
     }
+
+    @Test
+    void memoryIsDisabledByDefaultWithShanghaiTimezone() {
+        RuntimeConfig config = RuntimeConfigLoader.load(new RuntimeConfigLoader.Input(
+                tempDir.resolve("home"),
+                tempDir.resolve("workspace"),
+                Map.of("CODEAGENT_PROVIDER", "mock", "CODEAGENT_MODEL", "mock-model")
+        ));
+
+        assertFalse(config.memory().enabled());
+        assertEquals(MemoryConfig.DEFAULT_TIMEZONE, config.memory().timezone());
+    }
+
+    @Test
+    void memoryLoadsOnlyFromUserSettingsAndIgnoresProjectOverride() throws Exception {
+        Path home = tempDir.resolve("home");
+        Path cwd = tempDir.resolve("workspace");
+        Files.createDirectories(home);
+        Files.createDirectories(cwd.resolve(".codeagent"));
+        Files.writeString(home.resolve("settings.json"), """
+                {
+                  "provider": "mock",
+                  "model": "mock-model",
+                  "memory": {
+                    "enabled": true,
+                    "timezone": "Europe/Paris"
+                  }
+                }
+                """);
+        Files.writeString(cwd.resolve(".codeagent").resolve("settings.json"), """
+                {
+                  "memory": {
+                    "enabled": false,
+                    "timezone": "UTC"
+                  }
+                }
+                """);
+
+        RuntimeConfig config = RuntimeConfigLoader.load(new RuntimeConfigLoader.Input(home, cwd, Map.of()));
+
+        assertTrue(config.memory().enabled());
+        assertEquals("Europe/Paris", config.memory().timezone().getId());
+    }
+
+    @Test
+    void projectSettingsCannotEnableMemoryWhenUserSettingsDoNot() throws Exception {
+        Path home = tempDir.resolve("home");
+        Path cwd = tempDir.resolve("workspace");
+        Files.createDirectories(home);
+        Files.createDirectories(cwd.resolve(".codeagent"));
+        Files.writeString(home.resolve("settings.json"), """
+                {
+                  "provider": "mock",
+                  "model": "mock-model"
+                }
+                """);
+        Files.writeString(cwd.resolve(".codeagent").resolve("settings.json"), """
+                {
+                  "memory": {
+                    "enabled": true,
+                    "timezone": "UTC"
+                  }
+                }
+                """);
+
+        RuntimeConfig config = RuntimeConfigLoader.load(
+                new RuntimeConfigLoader.Input(home, cwd, Map.of()));
+
+        assertFalse(config.memory().enabled());
+        assertEquals(MemoryConfig.DEFAULT_TIMEZONE, config.memory().timezone());
+    }
+
+    @Test
+    void memoryUsesFixedDefaultTimezoneWhenEnabled() throws Exception {
+        Path home = tempDir.resolve("home");
+        Files.createDirectories(home);
+        Files.writeString(home.resolve("settings.json"), """
+                {
+                  "provider": "mock",
+                  "model": "mock-model",
+                  "memory": {
+                    "enabled": true
+                  }
+                }
+                """);
+
+        RuntimeConfig config = RuntimeConfigLoader.load(new RuntimeConfigLoader.Input(
+                home, tempDir.resolve("workspace"), Map.of()));
+
+        assertTrue(config.memory().enabled());
+        assertEquals(MemoryConfig.DEFAULT_TIMEZONE, config.memory().timezone());
+    }
+
+    @Test
+    void invalidMemoryConfigurationFailsWithActionablePath() throws Exception {
+        Path home = tempDir.resolve("home");
+        Files.createDirectories(home);
+        Files.writeString(home.resolve("settings.json"), """
+                {
+                  "provider": "mock",
+                  "model": "mock-model",
+                  "memory": {
+                    "enabled": true,
+                    "timezone": "Not/AZone"
+                  }
+                }
+                """);
+
+        RuntimeConfigException exception = assertThrows(RuntimeConfigException.class,
+                () -> RuntimeConfigLoader.load(new RuntimeConfigLoader.Input(
+                        home, tempDir.resolve("workspace"), Map.of())));
+
+        assertTrue(exception.getMessage().contains("memory"));
+        assertTrue(exception.getMessage().contains("Not/AZone"));
+    }
 }

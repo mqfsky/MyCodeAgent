@@ -8,10 +8,13 @@ import minicode.permissions.api.PermissionPromptHandler;
 import minicode.permissions.model.PermissionDecision;
 import minicode.permissions.model.PermissionPromptResult;
 import minicode.permissions.model.PermissionRequest;
+import minicode.memory.extraction.MemoryExtractionEventSink;
+import minicode.memory.extraction.MemoryExtractionUpdatedEvent;
 
 import java.util.Objects;
 
-public final class RendererTuiBridge implements AgentEventSink, AgentTaskEventSink, PermissionPromptHandler {
+public final class RendererTuiBridge
+        implements AgentEventSink, AgentTaskEventSink, PermissionPromptHandler, MemoryExtractionEventSink {
     private volatile RendererTuiShell shell;
 
     void attach(RendererTuiShell shell) {
@@ -31,6 +34,14 @@ public final class RendererTuiBridge implements AgentEventSink, AgentTaskEventSi
         RendererTuiShell current = shell;
         if (current != null) {
             current.onAgentTaskEvent(event);
+        }
+    }
+
+    @Override
+    public void onUpdated(MemoryExtractionUpdatedEvent event) {
+        RendererTuiShell current = shell;
+        if (current != null) {
+            current.onMemoryExtractionUpdated(event);
         }
     }
 

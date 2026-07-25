@@ -94,6 +94,8 @@ public final class RuntimeConfigLoader {
         Map<String, McpServerConfig> mcpServers = mcpServers(homeSettings, cwdSettings, input.env());
         // 个人外部集成只允许由用户级配置声明，工作区不能替换个人身份或目标。
         IntegrationsConfig integrations = integrations(homeSettings);
+        // 自动个人记忆只能由用户级配置开启，项目配置不能启用或改变其时区。
+        MemoryConfig memory = memory(homeSettings);
 
         // 模型名称是运行必需项，所有来源都没有配置时立即终止启动。
         if (model.isBlank()) {
@@ -121,8 +123,32 @@ public final class RuntimeConfigLoader {
                         + "; env"
                 ,
                 mcpServers,
-                integrations
+                integrations,
+                memory
         );
+    }
+
+    private static MemoryConfig memory(JsonNode homeSettings) {
+        JsonNode memory = homeSettings == null ? null : homeSettings.get("memory");
+        if (memory == null || memory.isNull()) {
+            return MemoryConfig.disabled();
+        }
+        if (!memory.isObject()) {
+            throw new RuntimeConfigException("Invalid memory configuration: memory must be an object");
+        }
+
+        try {
+            JsonNode enabledNode = memory.get("enabled");
+            if (enabledNode != null && !enabledNode.isNull() && !enabledNode.isBoolean()) {
+                throw new IllegalArgumentException("enabled must be a boolean");
+            }
+            boolean enabled = enabledNode != null && enabledNode.asBoolean(false);
+            String timezone = optionalSetting(memory, "timezone", MemoryConfig.DEFAULT_TIMEZONE.getId());
+            return new MemoryConfig(enabled, ZoneId.of(timezone));
+        } catch (RuntimeException exception) {
+            throw new RuntimeConfigException("Invalid memory configuration: "
+                    + messageOrType(exception), exception);
+        }
     }
 
     private static IntegrationsConfig integrations(JsonNode homeSettings) {
