@@ -395,6 +395,39 @@ class SystemPromptBuilderTest {
         assertTrue(queryPrompt.contains("completed or cancelled merely because"));
     }
 
+    @Test
+    void promptAddsStudyRulesAndAnswerFreeActiveStateOnlyWhenStudyToolIsAvailable() throws Exception {
+        Path home = tempDir.resolve("home");
+        Path cwd = tempDir.resolve("workspace");
+        Files.createDirectories(home);
+        Files.createDirectories(cwd);
+        ToolRegistry withoutStudy = new ToolRegistry();
+        ToolRegistry withStudy = new ToolRegistry();
+        withStudy.register(new StudyStartFakeTool());
+
+        String basePrompt = new SystemPromptBuilder().build(
+                new SystemPromptBuilder.Input(home, cwd, withoutStudy));
+        String studyPrompt = new SystemPromptBuilder().build(new SystemPromptBuilder.Input(
+                home,
+                cwd,
+                withStudy,
+                List.of(),
+                List.of(),
+                MemoryConfig.disabled(),
+                Optional.of("quizId=quiz-1\n1. [UNANSWERED] 什么是 CAS？")
+        ));
+
+        assertFalse(basePrompt.contains("Study quiz rules:"));
+        assertTrue(studyPrompt.contains("Study quiz rules:"));
+        assertTrue(studyPrompt.contains("call start_study_quiz"));
+        assertTrue(studyPrompt.contains("prepare_study_review"));
+        assertTrue(studyPrompt.contains("save_study_review"));
+        assertTrue(studyPrompt.contains("untrusted study data"));
+        assertTrue(studyPrompt.contains("<study-state>"));
+        assertTrue(studyPrompt.contains("quizId=quiz-1"));
+        assertTrue(studyPrompt.contains("什么是 CAS？"));
+    }
+
     private static McpServerSummary connectedSummary(String name, String instructions) {
         return new McpServerSummary(name, name, McpServerStatus.CONNECTED, 0,
                 Optional.empty(), Optional.empty(), Optional.of(instructions));
@@ -470,6 +503,32 @@ class SystemPromptBuilderTest {
         public ToolMetadata metadata() {
             return new ToolMetadata("query_plan", "Query recorded plans", SCHEMA,
                     ToolOrigin.EXTENSION, Set.of(ToolCapability.READ), ToolStatus.AVAILABLE);
+        }
+
+        @Override
+        public ObjectNode inputSchema() {
+            return SCHEMA;
+        }
+
+        @Override
+        public ValidationResult validateInput(com.fasterxml.jackson.databind.JsonNode input) {
+            return ValidationResult.valid(input);
+        }
+
+        @Override
+        public ToolResult run(com.fasterxml.jackson.databind.JsonNode normalizedInput, ToolContext toolContext) {
+            return ToolResult.ok("ok");
+        }
+    }
+
+    private static final class StudyStartFakeTool implements Tool {
+        private static final ObjectNode SCHEMA = JsonNodeFactory.instance.objectNode()
+                .put("type", "object");
+
+        @Override
+        public ToolMetadata metadata() {
+            return new ToolMetadata("start_study_quiz", "Start a study quiz", SCHEMA,
+                    ToolOrigin.EXTENSION, Set.of(ToolCapability.STUDY_SESSION), ToolStatus.AVAILABLE);
         }
 
         @Override

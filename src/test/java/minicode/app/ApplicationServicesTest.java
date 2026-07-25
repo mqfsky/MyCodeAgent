@@ -109,6 +109,96 @@ class ApplicationServicesTest {
     }
 
     @Test
+    void appAssemblyRegistersParentStudyToolsAndInjectsAnswerFreeActiveState() throws Exception {
+        Path home = tempDir.resolve("home-study");
+        Path workspace = tempDir.resolve("workspace-study");
+        Files.createDirectories(home.resolve("study/imports"));
+        Files.writeString(home.resolve("study/imports/java.md"), """
+                # JVM
+                ## 什么是双亲委派？
+                先委托父加载器，失败后再由当前加载器尝试。
+                """);
+        ApplicationServices services = ApplicationServices.create(
+                home,
+                workspace,
+                "session-study",
+                new MockModelAdapter("done"),
+                event -> {
+                },
+                PermissionPromptHandler.unavailable()
+        );
+        try {
+            assertTrue(services.toolRegistry().find("start_study_quiz").isPresent());
+            assertTrue(services.toolRegistry().find("get_study_reference").isPresent());
+            assertTrue(services.toolRegistry().find("prepare_study_review").isPresent());
+            assertTrue(services.toolRegistry().find("save_study_review").isPresent());
+            assertTrue(services.toolRegistry().find("finish_study_quiz").isPresent());
+            assertTrue(services.toolRegistry().find("query_study_progress").isPresent());
+            assertEquals(Set.of(ToolCapability.STUDY_SESSION),
+                    services.toolRegistry().find("start_study_quiz").orElseThrow()
+                            .metadata().capabilities());
+
+            assertTrue(services.importStudyBank("java.md").contains("study: imported"));
+            services.studyService().startQuiz("session-study", 1, List.of(), false);
+            String prompt = ((SystemMessage) services.turnRequest(
+                    List.of(new UserMessage("回答第一题")), 3).messages().getFirst()).content();
+
+            assertTrue(prompt.contains("Study quiz rules:"));
+            assertTrue(prompt.contains("<study-state>"));
+            assertTrue(prompt.contains("什么是双亲委派？"));
+            assertFalse(prompt.contains("先委托父加载器，失败后再由当前加载器尝试。"));
+        } finally {
+            services.close();
+        }
+    }
+
+    @Test
+    void appAssemblyCompletionGuardRejectsFinalUntilPendingStudyReviewIsSaved() throws Exception {
+        Path home = tempDir.resolve("home-study-guard");
+        Path workspace = tempDir.resolve("workspace-study-guard");
+        Files.createDirectories(home.resolve("study/imports"));
+        Files.writeString(home.resolve("study/imports/java.md"), """
+                # JVM
+                ## 什么是 JIT？
+                JIT 会把热点字节码编译为机器码。
+                """);
+        ApplicationServices services = ApplicationServices.create(
+                home,
+                workspace,
+                "session-study-guard",
+                new MockModelAdapter("premature"),
+                event -> {
+                },
+                PermissionPromptHandler.unavailable()
+        );
+        try {
+            services.importStudyBank("java.md");
+            var quiz = services.studyService().startQuiz(
+                    "session-study-guard", 1, List.of(), false);
+            var prepared = services.studyService().prepareReview(
+                    "session-study-guard",
+                    quiz.questions().getFirst().questionId(),
+                    minicode.study.StudyService.SubmissionKind.ANSWER,
+                    "把热点代码编译成机器码");
+
+            AgentTurnResult rejected = services.runTurn(services.turnRequest(
+                    List.of(new UserMessage("请点评")), 1));
+            assertEquals(AgentTurnStopReason.MODEL_ERROR, rejected.stopReason());
+
+            services.studyService().saveReview(
+                    "session-study-guard",
+                    new minicode.study.StudyService.ReviewDraft(
+                            prepared.attemptId(), 8.0,
+                            List.of("方向正确"), List.of("缺少触发细节"), List.of(), List.of("JIT")));
+            AgentTurnResult accepted = services.runTurn(services.turnRequest(
+                    List.of(new UserMessage("继续")), 1));
+            assertEquals(AgentTurnStopReason.FINAL, accepted.stopReason());
+        } finally {
+            services.close();
+        }
+    }
+
+    @Test
     void enabledUserCalendarIntegrationRegistersParentOnlyExternalWriteToolAndPromptRules() {
         RuntimeConfig runtimeConfig = runtimeConfigWithCalendar(true);
         ApplicationServices services = ApplicationServices.create(

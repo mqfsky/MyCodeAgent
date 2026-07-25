@@ -266,6 +266,129 @@ class RendererTuiShellTest {
     }
 
     @Test
+    void rendererSlashStudyReportsAsAssistantWithoutCallingModelOrEnteringSession() throws Exception {
+        Path home = Files.createDirectories(tempDir.resolve("study-report-home"));
+        Path workspace = Files.createDirectories(tempDir.resolve("study-report-workspace"));
+        FakeTerminalScreen screen = new FakeTerminalScreen(new TerminalSize(120, 20));
+        RendererTuiBridge bridge = new RendererTuiBridge();
+        int[] modelCalls = {0};
+        ApplicationServices services = ApplicationServices.create(
+                home,
+                workspace,
+                "study-report-session",
+                messages -> {
+                    modelCalls[0]++;
+                    return new AssistantStep("unexpected", AssistantKind.FINAL);
+                },
+                bridge,
+                bridge
+        );
+        RendererTuiShell shell = new RendererTuiShell(
+                services,
+                new BufferedLineInput(new BufferedReader(new StringReader("/study\n"))),
+                screen,
+                MiniTui.DEFAULT_MAX_STEPS,
+                bridge
+        );
+
+        shell.runOnce();
+
+        String latest = screen.latestText();
+        assertTrue(latest.contains("● CodeAgent › Study"), latest);
+        assertTrue(latest.contains("/study <file.md>"), latest);
+        assertFalse(latest.contains("❯ You › /study"), latest);
+        assertEquals(0, modelCalls[0]);
+        assertTrue(services.sessionStore()
+                .readAll("study-report-session", workspace.toString())
+                .isEmpty());
+    }
+
+    @Test
+    void rendererSlashStudyImportsAPathWithSpacesWithoutCallingModelOrEnteringSession() throws Exception {
+        Path home = Files.createDirectories(tempDir.resolve("study-import-home"));
+        Path workspace = Files.createDirectories(tempDir.resolve("study-import-workspace"));
+        Path imports = Files.createDirectories(home.resolve("study/imports"));
+        Files.writeString(imports.resolve("Java interview notes.md"), """
+                # Java
+
+                ## 什么是 JVM？
+
+                JVM 是 Java 虚拟机。
+                """);
+        FakeTerminalScreen screen = new FakeTerminalScreen(new TerminalSize(120, 20));
+        RendererTuiBridge bridge = new RendererTuiBridge();
+        int[] modelCalls = {0};
+        ApplicationServices services = ApplicationServices.create(
+                home,
+                workspace,
+                "study-import-session",
+                messages -> {
+                    modelCalls[0]++;
+                    return new AssistantStep("unexpected", AssistantKind.FINAL);
+                },
+                bridge,
+                bridge
+        );
+        RendererTuiShell shell = new RendererTuiShell(
+                services,
+                new BufferedLineInput(new BufferedReader(
+                        new StringReader("/study Java interview notes.md\n"))),
+                screen,
+                MiniTui.DEFAULT_MAX_STEPS,
+                bridge
+        );
+
+        shell.runOnce();
+
+        String latest = screen.latestText();
+        assertTrue(latest.contains("● CodeAgent › study: imported"), latest);
+        assertTrue(latest.contains("questions=1"), latest);
+        assertFalse(latest.contains("❯ You › /study"), latest);
+        assertEquals(0, modelCalls[0]);
+        assertTrue(services.sessionStore()
+                .readAll("study-import-session", workspace.toString())
+                .isEmpty());
+    }
+
+    @Test
+    void rendererSlashStudyingRemainsAnOrdinaryUserMessage() throws Exception {
+        Path home = Files.createDirectories(tempDir.resolve("studying-home"));
+        Path workspace = Files.createDirectories(tempDir.resolve("studying-workspace"));
+        FakeTerminalScreen screen = new FakeTerminalScreen(new TerminalSize(100, 14));
+        RendererTuiBridge bridge = new RendererTuiBridge();
+        int[] modelCalls = {0};
+        ApplicationServices services = ApplicationServices.create(
+                home,
+                workspace,
+                "studying-session",
+                messages -> {
+                    modelCalls[0]++;
+                    return new AssistantStep("ordinary reply", AssistantKind.FINAL);
+                },
+                bridge,
+                bridge
+        );
+        RendererTuiShell shell = new RendererTuiShell(
+                services,
+                new BufferedLineInput(new BufferedReader(new StringReader("/studying\n"))),
+                screen,
+                MiniTui.DEFAULT_MAX_STEPS,
+                bridge
+        );
+
+        shell.runOnce();
+        shell.awaitIdle(Duration.ofSeconds(2));
+
+        String latest = screen.latestText();
+        assertTrue(latest.contains("❯ You › /studying"), latest);
+        assertTrue(latest.contains("ordinary reply"), latest);
+        assertEquals(1, modelCalls[0]);
+        assertTrue(services.sessionStore().readAll("studying-session", workspace.toString()).stream()
+                .anyMatch(event -> event.message().orElse(null) instanceof UserMessage user
+                        && user.content().equals("/studying")));
+    }
+
+    @Test
     void rendererSlashInitCreatesFilesWithoutCallingModelOrEnteringSession() throws Exception {
         Path home = Files.createDirectories(tempDir.resolve("home"));
         Path workspace = Files.createDirectories(tempDir.resolve("workspace"));

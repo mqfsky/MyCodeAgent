@@ -1,7 +1,9 @@
 package minicode.app;
 
 import minicode.config.MemoryConfig;
+import minicode.core.message.AssistantToolCallMessage;
 import minicode.core.message.ChatMessage;
+import minicode.core.message.ToolResultMessage;
 import minicode.core.message.UserMessage;
 import minicode.core.turn.AgentTurnRequest;
 import minicode.core.turn.AgentTurnResult;
@@ -19,6 +21,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -45,6 +48,7 @@ public final class ConversationTurnService {
     private final Path cwd;
     private final String sessionId;
     private final Clock clock;
+    private final BooleanSupplier memoryExtractionSuppressed;
 
     public ConversationTurnService(Supplier<List<ChatMessage>> historyLoader,
                                    Consumer<TurnPersistencePlan> persistence,
@@ -55,6 +59,20 @@ public final class ConversationTurnService {
                                    Path cwd,
                                    String sessionId,
                                    Clock clock) {
+        this(historyLoader, persistence, requestFactory, turnRunner, memorySubmitter, memoryConfig,
+                cwd, sessionId, clock, () -> false);
+    }
+
+    public ConversationTurnService(Supplier<List<ChatMessage>> historyLoader,
+                                   Consumer<TurnPersistencePlan> persistence,
+                                   RequestFactory requestFactory,
+                                   Function<AgentTurnRequest, AgentTurnResult> turnRunner,
+                                   MemoryExtractionSubmitter memorySubmitter,
+                                   MemoryConfig memoryConfig,
+                                   Path cwd,
+                                   String sessionId,
+                                   Clock clock,
+                                   BooleanSupplier memoryExtractionSuppressed) {
         this.historyLoader = Objects.requireNonNull(historyLoader, "historyLoader");
         this.persistence = Objects.requireNonNull(persistence, "persistence");
         this.requestFactory = Objects.requireNonNull(requestFactory, "requestFactory");
@@ -64,11 +82,15 @@ public final class ConversationTurnService {
         this.cwd = Objects.requireNonNull(cwd, "cwd").toAbsolutePath().normalize();
         this.sessionId = requireText(sessionId, "sessionId");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.memoryExtractionSuppressed = Objects.requireNonNull(
+                memoryExtractionSuppressed, "memoryExtractionSuppressed");
     }
 
     public AgentTurnResult executeUserTurn(UserMessage userMessage, int maxSteps) {
         UserMessage actualUserMessage = Objects.requireNonNull(userMessage, "userMessage");
         List<ChatMessage> history = List.copyOf(historyLoader.get());
+        boolean studyActiveBeforeTurn = memoryConfig.enabled()
+                && memoryExtractionSuppressed.getAsBoolean();
 
         persistence.accept(new TurnPersistencePlan(
                 List.of(new PersistenceAction.AppendMessagesAction(List.of(actualUserMessage)))));
@@ -79,10 +101,20 @@ public final class ConversationTurnService {
         AgentTurnResult result = Objects.requireNonNull(turnRunner.apply(request), "turn result");
         persistence.accept(result.persistencePlan());
 
-        if (memoryConfig.enabled()) {
+        if (memoryConfig.enabled()
+                && !studyActiveBeforeTurn
+                && !memoryExtractionSuppressed.getAsBoolean()
+                && !containsStudyToolActivity(messagesAfterCurrent(
+                        actualUserMessage, result.messages()))) {
             try {
+                // Once a session history contains a Study tool, older user turns can include
+                // practice answers that must never be reclassified as durable user facts.
+                // Keep extracting from the current ordinary turn, but omit that mixed history.
+                List<ChatMessage> extractionHistory = containsStudyToolActivity(history)
+                        ? List.of()
+                        : history;
                 ConversationSnapshot snapshot = ConversationSnapshot.capture(
-                        extractionMessages(history, actualUserMessage, result.messages()),
+                        extractionMessages(extractionHistory, actualUserMessage, result.messages()),
                         actualUserMessage,
                         MemoryConfig.RECENT_TURN_COUNT,
                         MemoryConfig.SNAPSHOT_MAX_CHARS,
@@ -126,24 +158,56 @@ public final class ConversationTurnService {
                                                         List<ChatMessage> resultMessages) {
         List<ChatMessage> source = new ArrayList<>(history);
         source.add(current);
-        int currentIndex = -1;
-        for (int index = resultMessages.size() - 1; index >= 0; index--) {
-            if (resultMessages.get(index) == current) {
-                currentIndex = index;
-                break;
-            }
-        }
-        if (currentIndex < 0) {
-            for (int index = resultMessages.size() - 1; index >= 0; index--) {
-                if (resultMessages.get(index).equals(current)) {
-                    currentIndex = index;
-                    break;
-                }
-            }
-        }
+        int currentIndex = currentMessageIndex(current, resultMessages);
         if (currentIndex >= 0 && currentIndex + 1 < resultMessages.size()) {
             source.addAll(resultMessages.subList(currentIndex + 1, resultMessages.size()));
         }
         return List.copyOf(source);
+    }
+
+    private static List<ChatMessage> messagesAfterCurrent(UserMessage current,
+                                                          List<ChatMessage> resultMessages) {
+        int currentIndex = currentMessageIndex(current, resultMessages);
+        if (currentIndex < 0 || currentIndex + 1 >= resultMessages.size()) {
+            return List.of();
+        }
+        return resultMessages.subList(currentIndex + 1, resultMessages.size());
+    }
+
+    private static int currentMessageIndex(UserMessage current, List<ChatMessage> resultMessages) {
+        for (int index = resultMessages.size() - 1; index >= 0; index--) {
+            if (resultMessages.get(index) == current) {
+                return index;
+            }
+        }
+        for (int index = resultMessages.size() - 1; index >= 0; index--) {
+            if (resultMessages.get(index).equals(current)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean containsStudyToolActivity(List<ChatMessage> messages) {
+        for (ChatMessage message : messages) {
+            String toolName = switch (message) {
+                case AssistantToolCallMessage toolCall -> toolCall.toolName();
+                case ToolResultMessage toolResult -> toolResult.toolName();
+                default -> "";
+            };
+            if (isStudyTool(toolName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isStudyTool(String toolName) {
+        return toolName.equals("start_study_quiz")
+                || toolName.equals("get_study_reference")
+                || toolName.equals("prepare_study_review")
+                || toolName.equals("save_study_review")
+                || toolName.equals("finish_study_quiz")
+                || toolName.equals("query_study_progress");
     }
 }

@@ -357,6 +357,14 @@ public final class RendererTuiShell {
             runMemoryCommand();
             return true;
         }
+        if ("/study".equals(trimmed)) {
+            runStudyReportCommand();
+            return true;
+        }
+        if (isStudyImportCommand(trimmed)) {
+            runStudyImportCommand(studyImportArgument(trimmed));
+            return true;
+        }
         if ("/init".equals(trimmed)) {
             runInitCommand();
             return true;
@@ -371,6 +379,16 @@ public final class RendererTuiShell {
         }
         startTurn(line, answerMode);
         return true;
+    }
+
+    private static boolean isStudyImportCommand(String input) {
+        return input.startsWith("/study")
+                && input.length() > "/study".length()
+                && Character.isWhitespace(input.charAt("/study".length()));
+    }
+
+    private static String studyImportArgument(String input) {
+        return input.substring("/study".length()).strip();
     }
 
     private void appendInputCharacter(char value) {
@@ -682,6 +700,21 @@ public final class RendererTuiShell {
 
     private void runMemoryCommand() {
         String report = services.memoryReport();
+        synchronized (lock) {
+            appendTranscriptLocked(TranscriptBlock.assistant(report));
+            redrawLocked();
+        }
+    }
+
+    private void runStudyReportCommand() {
+        appendAssistantReport(services.studyReport());
+    }
+
+    private void runStudyImportCommand(String argument) {
+        appendAssistantReport(services.importStudyBank(argument));
+    }
+
+    private void appendAssistantReport(String report) {
         synchronized (lock) {
             appendTranscriptLocked(TranscriptBlock.assistant(report));
             redrawLocked();

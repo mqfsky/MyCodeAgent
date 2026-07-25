@@ -103,6 +103,7 @@ class AgentRuntimeFactoryTest {
         assertSame(parent.find("run_command").orElseThrow(), child.find("run_command").orElseThrow());
         assertSame(parent.find("mcp__server__tool").orElseThrow(),
                 child.find("mcp__server__tool").orElseThrow());
+        assertTrue(child.find("start_study_quiz").isEmpty());
     }
 
     @Test
@@ -271,6 +272,7 @@ class AgentRuntimeFactoryTest {
         registry.register(tool("ask_user", ToolOrigin.BUILTIN, ToolCapability.ASK_USER));
         registry.register(tool("agent", ToolOrigin.EXTENSION, ToolCapability.BACKGROUND_TASK));
         registry.register(tool("mcp__server__tool", ToolOrigin.MCP, ToolCapability.COMMAND));
+        registry.register(tool("start_study_quiz", ToolOrigin.EXTENSION, ToolCapability.STUDY_SESSION));
         return registry;
     }
 

@@ -6,5 +6,6 @@ public enum ToolCapability {
     EXTERNAL_WRITE,
     COMMAND,
     ASK_USER,
-    BACKGROUND_TASK
+    BACKGROUND_TASK,
+    STUDY_SESSION
 }

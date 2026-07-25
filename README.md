@@ -15,6 +15,7 @@ CodeAgent 是一个使用 Java 21 编写的、本地优先个人助手，软件�
 - 支持手动 `/compact` 和自动上下文压缩，避免长对话无限膨胀。
 - 支持 `CODEAGENT.md`、`AGENTS.md` 和 `.codeagent/rules/*.md` 分层项目记忆。
 - 可选启用异步个人记忆：提取长期用户信息、项目工作偏好和未来计划，并在启动时展示今日与逾期计划。
+- 支持从严格 Markdown 录入八股题库，按会话答题、追问和评分，并根据全局历史自适应复习。
 - 支持从项目级、用户级和兼容目录发现 `SKILL.md`，按需加载完整 Skill。
 - 支持通过 stdio 或 Streamable HTTP 连接 MCP Server，并把远端能力注册为 Agent 工具。
 - 可选接入个人飞书主日历，以强类型工具创建私密日程，并在每次外部写入前展示确认信息。
@@ -35,7 +36,7 @@ CodeAgent 是一个使用 Java 21 编写的、本地优先个人助手，软件�
   -> SessionStore 追加写入 JSONL
 ```
 
-普通自然语言任务由模型理解；`/compact`、`/memory`、`/init`、`/skill` 等本地命令由 TUI 直接识别，不会进入模型调用链。
+普通自然语言任务由模型理解；`/compact`、`/memory`、`/study`、`/init`、`/skill` 等本地命令由 TUI 直接识别，不会进入模型调用链。
 
 ## 环境要求
 
@@ -250,9 +251,57 @@ java -jar target/codeagent.jar --resume <session-id>
 | --- | --- |
 | `/init` | 检测项目结构，生成 `CODEAGENT.md` 和 `.codeagent/rules/*.md` |
 | `/memory` | 查看项目记忆及自动个人记忆的路径、解析和队列状态（不打印个人记忆正文） |
+| `/study` | 查看已录入题库及答题记录概况 |
+| `/study <相对文件名.md>` | 从 `~/.codeagent/study/imports/` 下的 Markdown 文件录入或更新题库；文件名可以包含空格 |
 | `/skill` | 列出本次启动时发现的 Skills |
 | `/compact` | 手动压缩当前会话上下文 |
 | `exit`、`quit` | 退出 CodeAgent |
+
+### 八股助手
+
+先把 Markdown 题库放进 CodeAgent 的固定导入目录：
+
+```bash
+mkdir -p ~/.codeagent/study/imports
+cp "/path/to/Java interview notes.md" ~/.codeagent/study/imports/
+```
+
+题库使用严格的两级标题结构：一级标题是章节，二级标题是题目。二级标题之后、下一个一级或二级标题之前的全部正文就是该题的标准答案，不需要再写 `### 答案`；答案不能为空。
+
+```md
+# CodeAgent
+
+## 上下文管理里的两级压缩策略是怎么做的
+
+我的思路是：不等上下文快溢出时再一次性处理，而是在每次请求模型之前做一次预检，分成“轻量清理”和“语义压缩”两级。
+
+第一级是 microCompact。它不调用模型，只清理历史中体积较大的旧工具输出，以较低成本释放上下文空间。
+
+第二级是 autoCompact。压力仍然较高时调用模型，把较早的对话整理成可继续执行任务的摘要，同时保留最近的原始对话。
+```
+
+进入 CodeAgent 后，通过相对于 `~/.codeagent/study/imports/` 的文件名导入，再查看题库概况：
+
+```text
+/study Java interview notes.md
+/study
+```
+
+导入后可以直接用自然语言开始和继续复习，例如：
+
+```text
+给我出 3 道 Java 八股题
+回答第 1 题：JVM 是运行 Java 字节码的虚拟机……
+追问第 1 题：这里的类加载具体分哪几步？
+继续下一题
+查看我的八股复习进度和重点复习方向
+```
+
+回答或追问时带上本轮题号，可以让 CodeAgent 明确关联当前题目。评分和点评以导入笔记中的答案为基准，答题记录会用于后续复习总结。
+
+每次成功执行 `/study <相对文件名.md>`，该文件都会作为完整、权威的当前题库，原子替换旧题库；旧题库中未出现在新文件里的题目不会继续用于新一轮抽题。导入失败时旧题库保持不变。已经产生的答题历史会保留，正在进行的答题轮次使用启动时的题目快照继续，不受题库替换影响。
+
+题库、答题记录和进行中轮次统一存放在 `~/.codeagent/study/`，不会写入当前项目仓库。题库与历史记录属于用户级全局数据，可在不同 workspace 和聊天 session 间复用；进行中轮次按 session 隔离，并通过保存的题目快照恢复。
 
 ## 会话与恢复
 

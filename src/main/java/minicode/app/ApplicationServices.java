@@ -27,6 +27,7 @@ import minicode.config.MemoryConfig;
 import minicode.config.RuntimeConfig;
 import minicode.core.event.AgentEventSink;
 import minicode.core.loop.AgentLoop;
+import minicode.core.loop.AssistantCompletionGuard;
 import minicode.core.loop.ForkableModelAdapter;
 import minicode.core.step.AgentStep;
 import minicode.core.turn.CancellationToken;
@@ -78,6 +79,7 @@ import minicode.session.plan.TurnPersistencePlan;
 import minicode.session.store.SessionStore;
 import minicode.skills.SkillDiscovery;
 import minicode.skills.SkillRegistry;
+import minicode.study.StudyService;
 import minicode.tools.builtin.AskUserTool;
 import minicode.tools.builtin.AgentTool;
 import minicode.tools.builtin.EditFileTool;
@@ -94,6 +96,12 @@ import minicode.tools.extension.CreateFeishuCalendarEventTool;
 import minicode.tools.memory.QueryPlanTool;
 import minicode.tools.registry.ToolRegistry;
 import minicode.tools.result.ToolResultStorage;
+import minicode.tools.study.FinishStudyQuizTool;
+import minicode.tools.study.GetStudyReferenceTool;
+import minicode.tools.study.PrepareStudyReviewTool;
+import minicode.tools.study.QueryStudyProgressTool;
+import minicode.tools.study.SaveStudyReviewTool;
+import minicode.tools.study.StartStudyQuizTool;
 import minicode.workspace.WorkspacePathResolver;
 
 import java.nio.file.Path;
@@ -129,7 +137,8 @@ import java.util.function.Supplier;
  * @param sessionId 当前会话 id
  * @param runtimeConfig 运行配置；为空表示测试或无配置路径
  * @param subAgentTaskManager 后台子 Agent 管理器；手工构造旧服务时为空
-     * @param memoryExtractionCoordinator 自动记忆单工作线程协调器；功能关闭或旧构造路径时为空
+ * @param memoryExtractionCoordinator 自动记忆单工作线程协调器；功能关闭或旧构造路径时为空
+ * @param studyService 题库导入、活动场次与学习历史的领域服务
  */
 public record ApplicationServices(ToolRegistry toolRegistry,
                                   PermissionService permissionService,
@@ -150,7 +159,8 @@ public record ApplicationServices(ToolRegistry toolRegistry,
                                   String sessionId,
                                   Optional<RuntimeConfig> runtimeConfig,
                                   Optional<SubAgentTaskManager> subAgentTaskManager,
-                                  Optional<MemoryExtractionCoordinator> memoryExtractionCoordinator) {
+                                  Optional<MemoryExtractionCoordinator> memoryExtractionCoordinator,
+                                  StudyService studyService) {
     private static final Duration MODEL_METADATA_TIMEOUT = Duration.ofSeconds(3);
     private static final int LARGE_TOOL_RESULT_THRESHOLD_CHARS = 200_000;
     private static final int TOOL_RESULT_BATCH_BUDGET_CHARS = 400_000;
@@ -176,7 +186,7 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         this(toolRegistry, permissionService, contextManager, sessionStore, sessionPersistenceRunner, agentLoop,
                 modelAdapter, compactService, systemPromptBuilder, workspacePathResolver, skillRegistry, mcpRuntime,
                 permissionStore, permissionStorePath, home, cwd, sessionId, Optional.empty(), Optional.empty(),
-                Optional.empty());
+                Optional.empty(), new StudyService(home));
     }
 
     /** 保留引入多 Agent 之前的标准构造方法，兼容现有测试和嵌入调用方。 */
@@ -201,7 +211,7 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         this(toolRegistry, permissionService, contextManager, sessionStore, sessionPersistenceRunner, agentLoop,
                 modelAdapter, compactService, systemPromptBuilder, workspacePathResolver, skillRegistry, mcpRuntime,
                 permissionStore, permissionStorePath, home, cwd, sessionId, runtimeConfig, Optional.empty(),
-                Optional.empty());
+                Optional.empty(), new StudyService(home));
     }
 
     /** 保留加入自动记忆协调器之前的完整构造签名。 */
@@ -227,7 +237,7 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         this(toolRegistry, permissionService, contextManager, sessionStore, sessionPersistenceRunner, agentLoop,
                 modelAdapter, compactService, systemPromptBuilder, workspacePathResolver, skillRegistry, mcpRuntime,
                 permissionStore, permissionStorePath, home, cwd, sessionId, runtimeConfig, subAgentTaskManager,
-                Optional.empty());
+                Optional.empty(), new StudyService(home));
     }
 
     public ApplicationServices {
@@ -254,6 +264,7 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         subAgentTaskManager = Objects.requireNonNull(subAgentTaskManager, "subAgentTaskManager");
         memoryExtractionCoordinator = Objects.requireNonNull(
                 memoryExtractionCoordinator, "memoryExtractionCoordinator");
+        studyService = Objects.requireNonNull(studyService, "studyService");
     }
 
     /**
@@ -359,9 +370,16 @@ public record ApplicationServices(ToolRegistry toolRegistry,
                 serializedPromptHandler, permissionStore);
         WorkspacePathResolver workspacePathResolver = new WorkspacePathResolver();
         SkillRegistry skillRegistry = new SkillRegistry(new SkillDiscovery(actualHome, actualCwd).discover());
+        StudyService studyService = new StudyService(actualHome);
 
         // 注册工具
         ToolRegistry registry = createBuiltInToolRegistry(permissionService, workspacePathResolver, skillRegistry);
+        registry.register(new StartStudyQuizTool(studyService));
+        registry.register(new GetStudyReferenceTool(studyService));
+        registry.register(new PrepareStudyReviewTool(studyService));
+        registry.register(new SaveStudyReviewTool(studyService));
+        registry.register(new FinishStudyQuizTool(studyService));
+        registry.register(new QueryStudyProgressTool(studyService));
         runtimeConfig.flatMap(config -> config.integrations().feishuCalendar())
                 .filter(FeishuCalendarConfig::enabled)
                 .ifPresent(config -> registerFeishuCalendarTool(registry, permissionService, config));
@@ -461,14 +479,19 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         // 上下文压缩服务
         CompactService compactService = new CompactService();
         SubAgentTurnMessageSource turnMessageSource = new SubAgentTurnMessageSource(taskManager);
+        AssistantCompletionGuard completionGuard = ignored -> studyService.hasPendingReview(sessionId)
+                ? Optional.of("a study answer is waiting for save_study_review")
+                : Optional.empty();
         AgentLoop agentLoop;
         if (runtimeConfig.isPresent()) {
             ModelContextWindow parentContextWindow = modelContextWindow(runtimeConfig.orElseThrow(), modelMetadata);
             agentLoop = new AgentLoop(modelAdapter, eventSink, registry, contextManager,
                     new ContextStatsCalculator(new TokenAccountingService(), parentContextWindow),
-                    new AutoCompactController(compactService, AutoCompactPolicy.defaults()), turnMessageSource);
+                    new AutoCompactController(compactService, AutoCompactPolicy.defaults()),
+                    2, turnMessageSource, completionGuard);
         } else {
-            agentLoop = new AgentLoop(modelAdapter, eventSink, registry, contextManager, turnMessageSource);
+            agentLoop = new AgentLoop(modelAdapter, eventSink, registry, contextManager,
+                    turnMessageSource, completionGuard);
         }
         Optional<MemoryExtractionCoordinator> memoryCoordinator = personalMemoryStore.map(memoryStore -> {
             MemoryExtractionEventSink memoryEventSink = eventSink instanceof MemoryExtractionEventSink sink
@@ -484,7 +507,7 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         return new ApplicationServices(registry, permissionService, contextManager, sessionStore,
                 persistenceRunner, agentLoop, modelAdapter, compactService, new SystemPromptBuilder(), workspacePathResolver,
                 skillRegistry, mcpRuntime, permissionStore, permissionStorePath, actualHome,
-                actualCwd, sessionId, runtimeConfig, Optional.of(taskManager), memoryCoordinator);
+                actualCwd, sessionId, runtimeConfig, Optional.of(taskManager), memoryCoordinator, studyService);
     }
 
     private static RuntimeModelAdapterFactory
@@ -647,7 +670,8 @@ public record ApplicationServices(ToolRegistry toolRegistry,
                 memoryConfig(),
                 cwd,
                 sessionId,
-                java.time.Clock.systemUTC()
+                java.time.Clock.systemUTC(),
+                () -> studyService.hasActiveQuiz(sessionId)
         );
     }
 
@@ -698,6 +722,20 @@ public record ApplicationServices(ToolRegistry toolRegistry,
                 .map(MemoryExtractionCoordinator::status)
                 .orElseGet(MemoryExtractionStatus::idle));
         return personal + "\n\n" + memorySnapshot().renderReport(cwd);
+    }
+
+    /**
+     * `/study` 的本地状态报告。该路径不调用模型，也不会写入聊天 Session。
+     */
+    public String studyReport() {
+        return studyService.report();
+    }
+
+    /**
+     * `/study <file.md>` 的本地题库导入。文件名始终相对于固定 imports 目录解析。
+     */
+    public String importStudyBank(String relativeFile) {
+        return studyService.importBank(relativeFile).render();
     }
 
     /**
@@ -780,7 +818,8 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         refreshed.add(new SystemMessage(systemPromptBuilder.build(
                 new SystemPromptBuilder.Input(home, cwd, toolRegistry, skillRegistry.summaries(),
                         mcpRuntime.summaries(),
-                        runtimeConfig.map(RuntimeConfig::memory).orElseGet(MemoryConfig::disabled))
+                        runtimeConfig.map(RuntimeConfig::memory).orElseGet(MemoryConfig::disabled),
+                        studyService.promptSnapshot(sessionId))
         )));
 
         // 再追加历史中的普通对话消息；旧 SystemMessage 会被跳过，避免重复或过期。

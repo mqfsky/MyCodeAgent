@@ -116,6 +116,14 @@ public final class MiniTui {
             output.println(services.memoryReport());
             return true;
         }
+        if ("/study".equals(trimmed)) {
+            output.println(services.studyReport());
+            return true;
+        }
+        if (isStudyImportCommand(trimmed)) {
+            output.println(services.importStudyBank(studyImportArgument(trimmed)));
+            return true;
+        }
         if ("/init".equals(trimmed)) {
             output.println(services.initializeProject());
             return true;
@@ -135,6 +143,16 @@ public final class MiniTui {
             finishTurn();
         }
         return true;
+    }
+
+    private static boolean isStudyImportCommand(String input) {
+        return input.startsWith("/study")
+                && input.length() > "/study".length()
+                && Character.isWhitespace(input.charAt("/study".length()));
+    }
+
+    private static String studyImportArgument(String input) {
+        return input.substring("/study".length()).strip();
     }
 
     private void runUserTurn(String line) {

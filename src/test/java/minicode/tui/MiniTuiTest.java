@@ -265,6 +265,103 @@ class MiniTuiTest {
     }
 
     @Test
+    void slashStudyReportsLocallyWithoutCallingModelOrPersistingCommand() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Path home = Files.createDirectories(tempDir.resolve("study-report-home"));
+        Path workspace = Files.createDirectories(tempDir.resolve("study-report-workspace"));
+        RecordingModelAdapter model = new RecordingModelAdapter();
+        ApplicationServices services = ApplicationServices.create(
+                home,
+                workspace,
+                "study-report-session",
+                model,
+                new MiniTuiEventSink(output, event -> {
+                }),
+                PermissionPromptHandler.unavailable()
+        );
+        MiniTui tui = new MiniTui(services, input("/study\n"), output);
+
+        tui.runOnce();
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("Study"), text);
+        assertTrue(text.contains("/study <file.md>"), text);
+        assertFalse(text.contains("user: /study"), text);
+        assertTrue(model.calls.isEmpty());
+        assertTrue(services.sessionStore()
+                .readAll("study-report-session", workspace.toString())
+                .isEmpty());
+    }
+
+    @Test
+    void slashStudyImportsAPathWithSpacesWithoutCallingModelOrPersistingCommand() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Path home = Files.createDirectories(tempDir.resolve("study-import-home"));
+        Path workspace = Files.createDirectories(tempDir.resolve("study-import-workspace"));
+        Path imports = Files.createDirectories(home.resolve("study/imports"));
+        Files.writeString(imports.resolve("Java interview notes.md"), """
+                # Java
+
+                ## 什么是 JVM？
+
+                JVM 是 Java 虚拟机。
+                """);
+        RecordingModelAdapter model = new RecordingModelAdapter();
+        ApplicationServices services = ApplicationServices.create(
+                home,
+                workspace,
+                "study-import-session",
+                model,
+                new MiniTuiEventSink(output, event -> {
+                }),
+                PermissionPromptHandler.unavailable()
+        );
+        MiniTui tui = new MiniTui(
+                services,
+                input("/study Java interview notes.md\n"),
+                output
+        );
+
+        tui.runOnce();
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("study: imported"), text);
+        assertTrue(text.contains("questions=1"), text);
+        assertFalse(text.contains("user: /study"), text);
+        assertTrue(model.calls.isEmpty());
+        assertTrue(services.sessionStore()
+                .readAll("study-import-session", workspace.toString())
+                .isEmpty());
+    }
+
+    @Test
+    void slashStudyingIsAnOrdinaryUserMessageRatherThanAStudyCommand() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Path home = Files.createDirectories(tempDir.resolve("studying-home"));
+        Path workspace = Files.createDirectories(tempDir.resolve("studying-workspace"));
+        RecordingModelAdapter model = new RecordingModelAdapter();
+        ApplicationServices services = ApplicationServices.create(
+                home,
+                workspace,
+                "studying-session",
+                model,
+                new MiniTuiEventSink(output, event -> {
+                }),
+                PermissionPromptHandler.unavailable()
+        );
+        MiniTui tui = new MiniTui(services, input("/studying\n"), output);
+
+        tui.runOnce();
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("user: /studying"), text);
+        assertEquals(1, model.calls.size());
+        assertTrue(services.sessionStore().readAll("studying-session", workspace.toString()).stream()
+                .anyMatch(event -> event.message().orElse(null) instanceof UserMessage user
+                        && user.content().equals("/studying")));
+    }
+
+    @Test
     void slashSkillListsDiscoveredSkillsWithoutCallingModelOrPersistingCommand() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Path home = Files.createDirectories(tempDir.resolve("home"));

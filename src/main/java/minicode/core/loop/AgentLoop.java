@@ -107,6 +107,13 @@ public final class AgentLoop {
     }
 
     public AgentLoop(ModelAdapter modelAdapter, AgentEventSink eventSink, ToolExecutor toolExecutor,
+                     ContextManager contextManager, TurnMessageSource turnMessageSource,
+                     AssistantCompletionGuard completionGuard) {
+        this(modelAdapter, eventSink, toolExecutor, contextManager, defaultContextStatsCalculator(),
+                AutoCompactController.disabled(), 2, turnMessageSource, completionGuard);
+    }
+
+    public AgentLoop(ModelAdapter modelAdapter, AgentEventSink eventSink, ToolExecutor toolExecutor,
                      ContextManager contextManager, ContextStatsCalculator contextStatsCalculator) {
         this(modelAdapter, eventSink, toolExecutor, contextManager, contextStatsCalculator, 2);
     }

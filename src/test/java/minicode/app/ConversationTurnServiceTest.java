@@ -3,6 +3,7 @@ package minicode.app;
 import minicode.config.MemoryConfig;
 import minicode.core.message.AssistantMessage;
 import minicode.core.message.ChatMessage;
+import minicode.core.message.ToolResultMessage;
 import minicode.core.message.UserMessage;
 import minicode.core.turn.AgentTurnRequest;
 import minicode.core.turn.AgentTurnResult;
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -143,6 +145,88 @@ class ConversationTurnServiceTest {
         service.executeUserTurn(new UserMessage("hello"), 3);
 
         assertTrue(requests.isEmpty());
+    }
+
+    @Test
+    void activeStudyTurnDoesNotSubmitPersonalMemoryExtraction() {
+        List<MemoryExtractionRequest> requests = new ArrayList<>();
+        ConversationTurnService service = service(
+                List.of(),
+                plan -> {
+                },
+                request -> AgentTurnResult.finalResult(
+                        List.of(new UserMessage("CAS 是比较并交换"), new AssistantMessage("继续")),
+                        TurnPersistencePlan.empty()),
+                request -> {
+                    requests.add(request);
+                    return true;
+                },
+                new MemoryConfig(true, ZONE),
+                () -> true);
+
+        service.executeUserTurn(new UserMessage("CAS 是比较并交换"), 3);
+
+        assertTrue(requests.isEmpty());
+    }
+
+    @Test
+    void turnThatStartsStudyToolDoesNotSubmitPersonalMemoryExtraction() {
+        List<MemoryExtractionRequest> requests = new ArrayList<>();
+        ConversationTurnService service = service(
+                List.of(),
+                plan -> {
+                },
+                request -> AgentTurnResult.finalResult(
+                        List.of(
+                                new UserMessage("给我出三道八股题"),
+                                new ToolResultMessage("tool-1", "start_study_quiz", "{\"quizId\":\"quiz-1\"}", false),
+                                new AssistantMessage("第 1 题")),
+                        TurnPersistencePlan.empty()),
+                request -> {
+                    requests.add(request);
+                    return true;
+                },
+                new MemoryConfig(true, ZONE),
+                () -> false);
+
+        service.executeUserTurn(new UserMessage("给我出三道八股题"), 3);
+
+        assertTrue(requests.isEmpty());
+    }
+
+    @Test
+    void completedStudyHistoryDoesNotSuppressExtractionForLaterOrdinaryTurn() {
+        List<MemoryExtractionRequest> requests = new ArrayList<>();
+        List<ChatMessage> history = List.of(
+                new UserMessage("给我出一道八股题"),
+                new ToolResultMessage(
+                        "tool-1", "start_study_quiz", "{\"quizId\":\"quiz-1\"}", false),
+                new AssistantMessage("本组已经结束"));
+        ConversationTurnService service = service(
+                history,
+                plan -> {
+                },
+                request -> {
+                    List<ChatMessage> resultMessages = new ArrayList<>(request.messages());
+                    resultMessages.add(new AssistantMessage("普通对话回复"));
+                    return AgentTurnResult.finalResult(
+                            List.copyOf(resultMessages), TurnPersistencePlan.empty());
+                },
+                request -> {
+                    requests.add(request);
+                    return true;
+                },
+                new MemoryConfig(true, ZONE),
+                () -> false);
+
+        service.executeUserTurn(new UserMessage("以后回答简洁一点"), 3);
+
+        assertEquals(1, requests.size());
+        String snapshot = requests.getFirst().conversation().render();
+        assertTrue(snapshot.contains("以后回答简洁一点"), snapshot);
+        assertTrue(snapshot.contains("普通对话回复"), snapshot);
+        assertFalse(snapshot.contains("给我出一道八股题"), snapshot);
+        assertFalse(snapshot.contains("本组已经结束"), snapshot);
     }
 
     @Test
@@ -285,6 +369,28 @@ class ConversationTurnServiceTest {
                 tempDir,
                 "session-1",
                 CLOCK
+        );
+    }
+
+    private ConversationTurnService service(
+            List<ChatMessage> history,
+            java.util.function.Consumer<TurnPersistencePlan> persistence,
+            java.util.function.Function<AgentTurnRequest, AgentTurnResult> runner,
+            minicode.memory.extraction.MemoryExtractionSubmitter submitter,
+            MemoryConfig config,
+            java.util.function.BooleanSupplier memoryExtractionSuppressed) {
+        return new ConversationTurnService(
+                () -> history,
+                persistence,
+                (messages, maxSteps) -> new AgentTurnRequest(
+                        "turn-1", tempDir, "session-1", messages, maxSteps, Optional.empty()),
+                runner,
+                submitter,
+                config,
+                tempDir,
+                "session-1",
+                CLOCK,
+                memoryExtractionSuppressed
         );
     }
 
