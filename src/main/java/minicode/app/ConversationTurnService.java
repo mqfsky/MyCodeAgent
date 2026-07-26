@@ -77,7 +77,7 @@ public final class ConversationTurnService {
         this.persistence = Objects.requireNonNull(persistence, "persistence");
         this.requestFactory = Objects.requireNonNull(requestFactory, "requestFactory");
         this.turnRunner = Objects.requireNonNull(turnRunner, "turnRunner");
-        this.memorySubmitter = Objects.requireNonNull(memorySubmitter, "memorySubmitter");
+        this.memorySubmitter = Objects.requireNonNull(memorySubmitter, "memorySubmitter"); // 记忆任务提交器
         this.memoryConfig = Objects.requireNonNull(memoryConfig, "memoryConfig");
         this.cwd = Objects.requireNonNull(cwd, "cwd").toAbsolutePath().normalize();
         this.sessionId = requireText(sessionId, "sessionId");
@@ -88,37 +88,48 @@ public final class ConversationTurnService {
 
     public AgentTurnResult executeUserTurn(UserMessage userMessage, int maxSteps) {
         UserMessage actualUserMessage = Objects.requireNonNull(userMessage, "userMessage");
+        // 获取历史消息
         List<ChatMessage> history = List.copyOf(historyLoader.get());
+        // 记录本轮开始前是否处于 Study 答题模式
+        // 为什么要记录？因为用户可能在答题时说，CAS 是通过比较旧值和预期值来判断的。这是练习答案，不是用户的长期知识背景，不能被提取
         boolean studyActiveBeforeTurn = memoryConfig.enabled()
-                && memoryExtractionSuppressed.getAsBoolean();
+                && memoryExtractionSuppressed.getAsBoolean(); // 判断当前是否在答题模式中
 
+        // 持久化用户消息
         persistence.accept(new TurnPersistencePlan(
                 List.of(new PersistenceAction.AppendMessagesAction(List.of(actualUserMessage)))));
 
         List<ChatMessage> turnMessages = new ArrayList<>(history);
         turnMessages.add(actualUserMessage);
         AgentTurnRequest request = requestFactory.create(List.copyOf(turnMessages), maxSteps);
+        // 进行对话，一轮 turn 结束后返回至这里
         AgentTurnResult result = Objects.requireNonNull(turnRunner.apply(request), "turn result");
+        // 持久化结果
         persistence.accept(result.persistencePlan());
 
-        if (memoryConfig.enabled()
-                && !studyActiveBeforeTurn
-                && !memoryExtractionSuppressed.getAsBoolean()
+        // 如果记忆开启，且未在答题模式中
+        if (memoryConfig.enabled() // 自动记忆已开启
+                && !studyActiveBeforeTurn // 本轮开始前没有正在答题
+                && !memoryExtractionSuppressed.getAsBoolean() // 本轮结束后也没有进入答题状态
                 && !containsStudyToolActivity(messagesAfterCurrent(
-                        actualUserMessage, result.messages()))) {
+                        actualUserMessage, result.messages()))) { // 本轮主 Agent 没有调用 study 工具
             try {
-                // Once a session history contains a Study tool, older user turns can include
-                // practice answers that must never be reclassified as durable user facts.
-                // Keep extracting from the current ordinary turn, but omit that mixed history.
+                // 如果当前会话的历史里曾经出现过 Study 工具，历史用户消息中就可能混有答题内容。
+                // 为了避免把旧答案误识别成长期用户信息，本次提取只看当前普通 Turn，不再携带旧历史。
+                // 判断是否包含 Study 工具的使用，如果有传空历史，如果没有，就传整个历史
                 List<ChatMessage> extractionHistory = containsStudyToolActivity(history)
                         ? List.of()
                         : history;
+                // 从完整的主 Agent 对话中，整理出一份“专门交给记忆 Agent”的安全、精简、不可变对话快照，用于总结
+                // 主 Session 中有系统提示词、工具调用、工具结果、压缩摘要等大量内容，哪些内容可以交给记忆 Agent？
                 ConversationSnapshot snapshot = ConversationSnapshot.capture(
                         extractionMessages(extractionHistory, actualUserMessage, result.messages()),
-                        actualUserMessage,
+                        actualUserMessage, // 用户当前轮对话
                         MemoryConfig.RECENT_TURN_COUNT,
                         MemoryConfig.SNAPSHOT_MAX_CHARS,
                         MemoryConfig.MESSAGE_MAX_CHARS);
+
+                // 提交任务
                 memorySubmitter.submit(new MemoryExtractionRequest(
                         sessionId,
                         request.turnId(),
@@ -153,11 +164,18 @@ public final class ConversationTurnService {
         return actual;
     }
 
+    /**
+     * 为避免受 messages 里旧历史摘要的影响，仅保留
+     * 本轮之前的历史
+     * + 当前 UserMessage
+     * + 主 Agent 在当前 UserMessage 之后产生的消息
+     */
     private static List<ChatMessage> extractionMessages(List<ChatMessage> history,
                                                         UserMessage current,
                                                         List<ChatMessage> resultMessages) {
         List<ChatMessage> source = new ArrayList<>(history);
         source.add(current);
+        // 返回用户本轮问话在 resultmessage 里的位置
         int currentIndex = currentMessageIndex(current, resultMessages);
         if (currentIndex >= 0 && currentIndex + 1 < resultMessages.size()) {
             source.addAll(resultMessages.subList(currentIndex + 1, resultMessages.size()));
@@ -189,12 +207,14 @@ public final class ConversationTurnService {
     }
 
     private static boolean containsStudyToolActivity(List<ChatMessage> messages) {
+        // 遍历 message 里的工具调用和工具结果类型的 message
         for (ChatMessage message : messages) {
             String toolName = switch (message) {
                 case AssistantToolCallMessage toolCall -> toolCall.toolName();
                 case ToolResultMessage toolResult -> toolResult.toolName();
                 default -> "";
             };
+            // 如果是 study 工具
             if (isStudyTool(toolName)) {
                 return true;
             }

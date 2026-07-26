@@ -101,6 +101,13 @@ public final class WriteMemoryFileTool implements Tool {
     public ToolResult run(JsonNode normalizedInput, ToolContext toolContext) {
         MemoryType type = MemoryType.parse(normalizedInput.path("type").asText());
         String expectedHash = normalizedInput.path("expectedHash").asText();
+        // 比对 hash 值，确保哈希值正确，文件没被改动
+        // 合法调用类似
+        // {
+        //   "type": "feedback",
+        //   "expectedHash": "2e6950...64位SHA-256",
+        //   "markdown": "# Feedback\n\n- 回答保持简洁\n- 修改后运行测试\n"
+        // }
         if (!tracker.authorizes(toolContext, type, expectedHash)) {
             return ToolResult.error(
                     "write_memory_file requires read_memory_file for the same type in this extraction turn");

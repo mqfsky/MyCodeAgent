@@ -69,6 +69,9 @@ public record ConversationSnapshot(List<MemoryConversationMessage> messages, int
 
         List<List<MemoryConversationMessage>> turns = new ArrayList<>();
         List<MemoryConversationMessage> current = null;
+
+        // 遍历待处理的消息
+        // 每遇到一个 usermessage，就开始保留一轮 turn，其中AssistantMessage以及ask_user会被保留，其余全被忽略
         for (ChatMessage message : source) {
             if (message instanceof UserMessage user) {
                 if (user != currentUserMessage && isInternalUserMessage(user.content())) {
@@ -84,6 +87,7 @@ public record ConversationSnapshot(List<MemoryConversationMessage> messages, int
             if (current == null) {
                 continue;
             }
+
             if (message instanceof AssistantMessage assistant) {
                 current.add(new MemoryConversationMessage(
                         MemoryConversationMessage.Role.ASSISTANT,
@@ -101,18 +105,25 @@ public record ConversationSnapshot(List<MemoryConversationMessage> messages, int
             }
         }
 
+        // 仅保留最近 5 轮 turn
         int firstTurn = Math.max(0, turns.size() - maxUserTurns);
         List<List<MemoryConversationMessage>> retainedTurns =
                 new ArrayList<>(turns.subList(firstTurn, turns.size()));
 
+        // 如果超长，根据字符约束，从最旧的 turn 开始删除
         while (retainedTurns.size() > 1
                 && renderMessages(flatten(retainedTurns)).length() > maxTotalChars) {
             retainedTurns.removeFirst();
         }
-
+        // 如果只剩一个 Turn 仍然超过 24,000 字符，它会：
+        // 优先裁剪最长的非当前用户消息。
+        // 优先删除 Assistant 等非用户消息。
+        // 尽量保护最后一条用户消息。
+        // 实在装不下时，才会裁剪最后的用户消息。
         List<MemoryConversationMessage> flattened = boundRenderedLength(
                 flatten(retainedTurns), maxTotalChars);
 
+        // 统计最终保留下来的对话快照中，一共有几个用户 Turn。
         int retainedUserTurns = (int) flattened.stream()
                 .filter(message -> message.role() == MemoryConversationMessage.Role.USER)
                 .count();

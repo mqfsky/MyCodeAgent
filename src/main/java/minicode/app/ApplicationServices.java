@@ -392,7 +392,7 @@ public record ApplicationServices(ToolRegistry toolRegistry,
         MemoryConfig memoryConfig = runtimeConfig.map(RuntimeConfig::memory).orElseGet(MemoryConfig::disabled);
         Optional<MarkdownMemoryStore> personalMemoryStore;
         if (memoryConfig.enabled()) {
-            // 记忆持久化工具
+            // 负责读写记忆的 md 文件
             MarkdownMemoryStore memoryStore = new MarkdownMemoryStore(new MemoryPathResolver(actualHome, actualCwd));
             personalMemoryStore = Optional.of(memoryStore);
             // 注册计划查询工具
@@ -501,6 +501,15 @@ public record ApplicationServices(ToolRegistry toolRegistry,
             agentLoop = new AgentLoop(modelAdapter, eventSink, registry, contextManager,
                     turnMessageSource, completionGuard);
         }
+
+        /**
+         * 组装出完整的自动提取链
+         * MemoryExtractionCoordinator 后台排队，逐个执行提取任务。
+         *   └─ MemoryExtractionAgent 调用模型判断和更新记忆。
+         *        ├─ ModelAdapter
+         *        ├─ MarkdownMemoryStore 负责真正落盘。
+         *        └─ MemoryExtractionPrompt 规定三类记忆的分类规则。
+         */
         Optional<MemoryExtractionCoordinator> memoryCoordinator = personalMemoryStore.map(memoryStore -> {
             MemoryExtractionEventSink memoryEventSink = eventSink instanceof MemoryExtractionEventSink sink
                     ? sink
@@ -668,18 +677,19 @@ public record ApplicationServices(ToolRegistry toolRegistry,
     /** 两套 TUI 共用的用户/通知 Turn 执行与持久化边界。 */
     public ConversationTurnService conversationTurnService() {
         return new ConversationTurnService(
-                this::sessionMessages,
-                sessionPersistenceRunner::apply,
-                this::turnRequest,
-                this::runTurn,
+                this::sessionMessages, // 会话历史读取器
+                sessionPersistenceRunner::apply, // 会话持久化服务
+                this::turnRequest, // 主 Agent 请求构造器
+                this::runTurn, // 主 Agent 执行器
+                // 记忆任务提交器：功能开启时使用后台协调器，否则使用禁用实现
                 memoryExtractionCoordinator
                         .<MemoryExtractionSubmitter>map(coordinator -> coordinator)
                         .orElseGet(MemoryExtractionSubmitter::disabled),
-                memoryConfig(),
-                cwd,
-                sessionId,
-                java.time.Clock.systemUTC(),
-                () -> studyService.hasActiveQuiz(sessionId)
+                memoryConfig(), // 记忆配置
+                cwd, // 当前项目路径
+                sessionId, // 当前会话 ID
+                java.time.Clock.systemUTC(), // 记忆任务的提交时间来源
+                () -> studyService.hasActiveQuiz(sessionId) // 学习模式状态，用于抑制答题期间的记忆提取
         );
     }
 

@@ -57,14 +57,22 @@ public final class MemoryExtractionAgent implements MemoryExtractionRunner {
                                       CancellationToken cancellationToken) {
         MemoryExtractionRequest actualRequest = Objects.requireNonNull(request, "request");
         CancellationToken actualCancellation = Objects.requireNonNull(cancellationToken, "cancellationToken");
+
         EnumMap<MemoryType, Integer> changes = new EnumMap<>(MemoryType.class);
+
+        // 创建私有工具表，只包含读写记忆两个部分
+        // 注册回调函数，确保文件确实改变了
         ToolRegistry registry = registryFactory.create(store, result -> {
             if (result.changed()) {
                 changes.merge(result.type(), 1, Integer::sum);
             }
         });
+
+        // 创建独立模型适配器
         ModelAdapter adapter = Objects.requireNonNull(
                 modelAdapterFactory.create(registry), "memory modelAdapter");
+
+        // 创建独立 agentLoop
         AgentLoop loop = new AgentLoop(
                 adapter,
                 AgentEventSink.noOp(),
@@ -72,15 +80,16 @@ public final class MemoryExtractionAgent implements MemoryExtractionRunner {
                 ContextManager.noOp());
         AgentTurnResult result;
         try {
+            // 构造记忆 agent 请求并调用
             result = loop.runTurn(new AgentTurnRequest(
                     "memory-" + actualRequest.turnId(),
                     actualRequest.cwd(),
                     actualRequest.sessionId(),
                     List.of(
-                            new SystemMessage(prompt.systemPrompt(actualRequest)),
-                            new UserMessage(prompt.userPrompt(actualRequest))
+                            new SystemMessage(prompt.systemPrompt(actualRequest)), // 分类规则、排除规则、Markdown 格式、工具纪律
+                            new UserMessage(prompt.userPrompt(actualRequest)) // 对话快照 JSON
                     ),
-                    MemoryConfig.EXTRACTION_MAX_STEPS,
+                    MemoryConfig.EXTRACTION_MAX_STEPS, // 最大步数
                     Optional.empty(),
                     actualCancellation
             ));
@@ -88,10 +97,14 @@ public final class MemoryExtractionAgent implements MemoryExtractionRunner {
             return MemoryExtractionResult.failed(message(exception));
         }
 
+        // 如果文件有改变，判断为执行成功，返回更新
         if (!changes.isEmpty()) {
             return MemoryExtractionResult.updated(Map.copyOf(changes));
         }
+
+        // 如果没有发生写入，解析原因
         switch (result.stopReason()) {
+            // 异常结果
             case CANCELLED -> {
                 return MemoryExtractionResult.cancelled("memory extraction was cancelled");
             }
@@ -115,6 +128,7 @@ public final class MemoryExtractionAgent implements MemoryExtractionRunner {
                 // 正常最终响应需要继续根据下方的权威工具结果分类。
             }
         }
+        // 没有发生写入时，代码继续检查是否调用过读取工具：
         boolean read = hasToolResult(result.messages(), ReadMemoryFileTool.NAME);
         boolean toolError = result.messages().stream()
                 .filter(ToolResultMessage.class::isInstance)
@@ -123,6 +137,8 @@ public final class MemoryExtractionAgent implements MemoryExtractionRunner {
         if (toolError) {
             return MemoryExtractionResult.failed("memory tool execution failed");
         }
+        // 读取过则说明已经写过记忆
+        // 没读取过则说明没有记忆候选
         return read ? MemoryExtractionResult.noChange() : MemoryExtractionResult.noMemory();
     }
 

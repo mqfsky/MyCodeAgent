@@ -78,7 +78,15 @@ public final class ReadMemoryFileTool implements Tool {
     public ToolResult run(JsonNode normalizedInput, ToolContext toolContext) {
         MemoryType type = MemoryType.parse(normalizedInput.path("type").asText());
         try {
+            // 返回结果类似
+            // {
+            //  "type": "feedback",
+            //  "exists": true,
+            //  "hash": "2e6950...64位SHA-256", 乐观并发控制，在读取后，写入前，如果文件被改，拒绝写入
+            //  "markdown": "# Feedback\n\n- 回答保持简洁\n"
+            //}
             MemoryReadResult result = store.read(type);
+            // 读取完毕后，记录凭证，由 sessionID + turnID + memory type sha256加密后组成
             tracker.observe(toolContext, type, result.hash());
             return ToolResult.ok(toJson(result).toString());
         } catch (MemoryStoreException exception) {

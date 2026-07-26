@@ -10,6 +10,11 @@ import java.util.concurrent.ConcurrentMap;
 
 /**
  * 用于证明同一记忆 Agent Turn 中的写入，使用了该 Turn 先前读取到的哈希值。
+ * 确保 在进行记忆写入操作前，先对记忆进行了读取
+ * 防止以下问题：
+ * 不允许不读直接写
+ * 不允许读 user 后写 plan
+ * 不允许复用上一个 turn 的读取结果
  */
 public final class MemoryReadTracker {
     private final ConcurrentMap<ReadScope, String> observedHashes = new ConcurrentHashMap<>();

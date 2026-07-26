@@ -18,6 +18,7 @@ public final class MemoryToolRegistryFactory {
     public ToolRegistry create(MarkdownMemoryStore store, Consumer<MemoryWriteResult> resultListener) {
         MarkdownMemoryStore actualStore = Objects.requireNonNull(store, "store");
         MemoryReadTracker tracker = new MemoryReadTracker();
+
         ToolRegistry registry = new ToolRegistry();
         registry.register(new ReadMemoryFileTool(actualStore, tracker));
         registry.register(new WriteMemoryFileTool(

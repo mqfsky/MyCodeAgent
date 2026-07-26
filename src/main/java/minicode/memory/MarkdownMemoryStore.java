@@ -77,6 +77,7 @@ public final class MarkdownMemoryStore {
         MemoryType actualType = Objects.requireNonNull(type, "type");
         String actualExpectedHash = requireExpectedHash(expectedHash);
         String actualMarkdown = Objects.requireNonNull(markdown, "markdown");
+        // 检查写入格式
         byte[] bytes = actualMarkdown.getBytes(StandardCharsets.UTF_8);
         if (bytes.length > MAX_FILE_BYTES) {
             throw new MemoryStoreException("Memory content exceeds 128 KiB");
@@ -89,6 +90,7 @@ public final class MarkdownMemoryStore {
         }
 
         MemoryReadResult before = read(actualType);
+        // 写入前再次校验哈希，乐观并发控制
         requireMatchingHash(actualExpectedHash, before.hash());
         String newHash = sha256(bytes);
 
@@ -97,6 +99,7 @@ public final class MarkdownMemoryStore {
             GitExcludeResult excludeResult = gitExcludeManager.prepare(paths.projectRoot(), paths.feedbackPath());
             diagnostics = excludeResult.diagnostics();
         }
+        // 内容相同就不写
         if (before.exists() && before.markdown().equals(actualMarkdown)) {
             return new MemoryWriteResult(actualType, false, before.hash(), diagnostics);
         }
@@ -105,14 +108,19 @@ public final class MarkdownMemoryStore {
         ensureSafeParentDirectories(anchor(actualType), target);
         Path temporary = null;
         try {
+            // 创建临时文件
             temporary = Files.createTempFile(target.getParent(),
                     "." + target.getFileName() + ".", ".tmp");
             rejectSymbolicLink(temporary);
+            // 写入临时文件
             writeAndFlush(temporary, bytes);
 
             // 尽量缩短预期哈希的校验窗口；此处有意不增加跨进程文件锁。
             MemoryReadResult immediatelyBeforeMove = read(actualType);
             requireMatchingHash(actualExpectedHash, immediatelyBeforeMove.hash());
+
+            // 将旧文件替换为新文件
+            // 读取者看到的要么是完整旧文件，要么是完整新文件，不会看到写到一半的中间状态。
             Files.move(temporary, target,
                     StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING);

@@ -53,16 +53,21 @@ public final class MemoryExtractionCoordinator
     public boolean submit(MemoryExtractionRequest request) {
         MemoryExtractionRequest actualRequest = Objects.requireNonNull(request, "request");
         synchronized (stateLock) {
+            // 在同一把状态锁内完成关闭检查和 Turn 去重，避免并发提交重复入队。
             if (closed || !acceptedTurnIds.add(actualRequest.turnId())) {
                 return false;
             }
+            // 请求已经被协调器接受，但单线程 worker 尚未开始执行。
+            // 任务入队
             waiting++;
         }
         try {
+            // 单线程执行器按提交顺序串行处理记忆任务；execute() 会在 worker 中更新运行状态。
             executor.execute(() -> execute(actualRequest));
             return true;
         } catch (RejectedExecutionException exception) {
             synchronized (stateLock) {
+                // 执行器关闭等情况会拒绝任务，此时回滚前面登记的排队状态和去重标记。
                 waiting--;
                 acceptedTurnIds.remove(actualRequest.turnId());
             }
@@ -108,13 +113,16 @@ public final class MemoryExtractionCoordinator
     private void execute(MemoryExtractionRequest request) {
         CancellationToken cancellation = CancellationToken.create();
         synchronized (stateLock) {
+            // 任务开始
             waiting = Math.max(0, waiting - 1);
             running = true;
             currentCancellation = cancellation;
         }
         try {
+            // 真正开始执行提取
             MemoryExtractionResult result = Objects.requireNonNull(
                     runner.run(request, cancellation), "memory extraction result");
+
             if (result.updated()) {
                 notifyUpdated(new MemoryExtractionUpdatedEvent(
                         request.sessionId(), request.turnId(), result.changes()));
