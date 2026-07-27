@@ -25,17 +25,17 @@ class TuiRendererSnapshotTest {
         RenderFrame frame = new TuiRenderer().render(state, new TerminalSize(32, 6));
 
         assertEquals(List.of(
-                " CodeAgent " + "─".repeat(21),
-                "❯ You › new user" + " ".repeat(16),
-                "● CodeAgent › new assistant" + " ".repeat(5),
-                "─".repeat(32),
-                "● Thinking..." + " ".repeat(19),
-                "› next task" + " ".repeat(21)
+                "  ◆ CodeAgent " + "─".repeat(5) + " ↑↓ history  ",
+                "  ❯ You › new user" + " ".repeat(14),
+                "  ● CodeAgent › new assistant" + " ".repeat(3),
+                "  " + "─".repeat(28) + "  ",
+                "  ● Thinking..." + " ".repeat(17),
+                "  › next task" + " ".repeat(19)
         ), frame.lines());
         assertEquals(32, frame.width());
         assertEquals(6, frame.height());
         assertEquals(6, frame.cursorRow());
-        assertEquals(12, frame.cursorColumn());
+        assertEquals(14, frame.cursorColumn());
         assertFalse(frame.text().contains("❯ You › old user"));
     }
 
@@ -62,12 +62,12 @@ class TuiRendererSnapshotTest {
         RenderFrame frame = new TuiRenderer().render(state, new TerminalSize(20, 8));
 
         assertEquals(8, frame.height());
-        assertEquals(" CodeAgent " + "─".repeat(9), frame.lines().getFirst());
-        assertEquals("─".repeat(20), frame.lines().get(5));
-        assertEquals("● Ready" + " ".repeat(13), frame.lines().get(6));
-        assertEquals("› " + " ".repeat(18), frame.lines().get(7));
+        assertEquals("  ◆ CodeAgent " + "─".repeat(6), frame.lines().getFirst());
+        assertEquals("  " + "─".repeat(16) + "  ", frame.lines().get(5));
+        assertEquals("  ● Ready" + " ".repeat(11), frame.lines().get(6));
+        assertEquals("  › Ask CodeAgent to", frame.lines().get(7));
         assertEquals(8, frame.cursorRow());
-        assertEquals(3, frame.cursorColumn());
+        assertEquals(5, frame.cursorColumn());
     }
 
     @Test

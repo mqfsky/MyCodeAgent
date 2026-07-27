@@ -21,48 +21,85 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JLineTerminalScreenTest {
     @Test
-    void userRoleLabelIsGreenWithoutColoringMarkersOrBodyMentions() {
-        String line = "❯ You › You asked a question";
+    void userRolePrefixIsGreenWithoutColoringBodyMentions() {
+        String line = "  ❯ You › You asked a question";
 
         AttributedString styled = JLineTerminalScreen.styleLine(line);
 
         assertEquals(line, styled.toString());
-        AttributedStyle green = AttributedStyle.DEFAULT.foreground(0, 175, 95);
-        assertEquals(AttributedStyle.DEFAULT, styled.styleAt(0));
-        int labelStart = line.indexOf("You");
-        for (int index = labelStart; index < labelStart + "You".length(); index++) {
+        AttributedStyle green = AttributedStyle.DEFAULT.foreground(74, 222, 128).bold();
+        int bodyStart = "  ❯ You › ".length();
+        for (int index = 0; index < bodyStart; index++) {
             assertEquals(green, styled.styleAt(index));
         }
-        assertEquals(AttributedStyle.DEFAULT, styled.styleAt(line.indexOf('›')));
+        assertEquals(AttributedStyle.DEFAULT, styled.styleAt(bodyStart));
         assertEquals(AttributedStyle.DEFAULT, styled.styleAt(line.lastIndexOf("You")));
     }
 
     @Test
-    void assistantRoleLabelIsOrangeWithoutColoringMarkersOrBodyMentions() {
-        String line = "● CodeAgent › CodeAgent can help";
+    void assistantRolePrefixIsBlueWithoutColoringBodyMentions() {
+        String line = "  ● CodeAgent › CodeAgent can help";
 
         AttributedString styled = JLineTerminalScreen.styleLine(line);
 
         assertEquals(line, styled.toString());
-        AttributedStyle orange = AttributedStyle.DEFAULT.foreground(255, 135, 0);
-        assertEquals(AttributedStyle.DEFAULT, styled.styleAt(0));
-        int labelStart = line.indexOf("CodeAgent");
-        for (int index = labelStart; index < labelStart + "CodeAgent".length(); index++) {
-            assertEquals(orange, styled.styleAt(index));
+        AttributedStyle blue = AttributedStyle.DEFAULT.foreground(96, 165, 250).bold();
+        int bodyStart = "  ● CodeAgent › ".length();
+        for (int index = 0; index < bodyStart; index++) {
+            assertEquals(blue, styled.styleAt(index));
         }
-        assertEquals(AttributedStyle.DEFAULT, styled.styleAt(line.indexOf('›')));
+        assertEquals(AttributedStyle.DEFAULT, styled.styleAt(bodyStart));
         assertEquals(AttributedStyle.DEFAULT, styled.styleAt(line.lastIndexOf("CodeAgent")));
     }
 
     @Test
-    void titleAndNonAssistantLinesKeepDefaultStyle() {
-        for (String line : List.of(" CodeAgent ───", "◇ read_file  ✓", "ordinary CodeAgent text")) {
-            AttributedString styled = JLineTerminalScreen.styleLine(line);
-            assertEquals(line, styled.toString());
-            for (int index = 0; index < line.length(); index++) {
-                assertEquals(AttributedStyle.DEFAULT, styled.styleAt(index));
-            }
+    void ordinaryLinesKeepDefaultStyle() {
+        String line = "ordinary CodeAgent text";
+
+        AttributedString styled = JLineTerminalScreen.styleLine(line);
+
+        assertEquals(line, styled.toString());
+        for (int index = 0; index < line.length(); index++) {
+            assertEquals(AttributedStyle.DEFAULT, styled.styleAt(index));
         }
+    }
+
+    @Test
+    void chromeToolsAndPromptsUseSemanticThemeColorsWithoutChangingText() {
+        AttributedStyle brand = AttributedStyle.DEFAULT.foreground(167, 139, 250).bold();
+        AttributedStyle tool = AttributedStyle.DEFAULT.foreground(34, 211, 238);
+        AttributedStyle success = AttributedStyle.DEFAULT.foreground(74, 222, 128).bold();
+        AttributedStyle error = AttributedStyle.DEFAULT.foreground(248, 113, 113).bold();
+        AttributedStyle warning = AttributedStyle.DEFAULT.foreground(251, 191, 36).bold();
+        AttributedStyle muted = AttributedStyle.DEFAULT.foreground(113, 121, 136);
+
+        String header = "  ◆ CodeAgent ───── ↑↓ history  ";
+        AttributedString styledHeader = JLineTerminalScreen.styleLine(header);
+        assertEquals(header, styledHeader.toString());
+        assertEquals(brand, styledHeader.styleAt(header.indexOf("CodeAgent")));
+        assertEquals(muted, styledHeader.styleAt(header.indexOf('─')));
+
+        String successfulTool = "  ◇ read_file  ✓   ";
+        AttributedString styledSuccess = JLineTerminalScreen.styleLine(successfulTool);
+        assertEquals(successfulTool, styledSuccess.toString());
+        assertEquals(tool, styledSuccess.styleAt(successfulTool.indexOf("read_file")));
+        assertEquals(success, styledSuccess.styleAt(successfulTool.indexOf('✓')));
+
+        String failedTool = "  ◇ run_command  ✗";
+        AttributedString styledError = JLineTerminalScreen.styleLine(failedTool);
+        assertEquals(failedTool, styledError.toString());
+        assertEquals(error, styledError.styleAt(failedTool.indexOf('✗')));
+
+        String permission = "  ! Permission › pending";
+        AttributedString styledPermission = JLineTerminalScreen.styleLine(permission);
+        assertEquals(permission, styledPermission.toString());
+        assertEquals(warning, styledPermission.styleAt(permission.indexOf('!')));
+
+        String input = "  › Ask CodeAgent to build, explain, or fix something…  ";
+        AttributedString styledInput = JLineTerminalScreen.styleLine(input);
+        assertEquals(input, styledInput.toString());
+        assertEquals(brand, styledInput.styleAt(input.indexOf('›')));
+        assertEquals(muted, styledInput.styleAt(input.indexOf("Ask")));
     }
 
     @Test
@@ -205,7 +242,7 @@ class JLineTerminalScreenTest {
     void redrawAddsAnsiColorWithoutChangingVisibleFrameText() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Terminal terminal = terminal(output);
-        String assistant = "● CodeAgent › hello CodeAgent";
+        String assistant = "  ● CodeAgent › hello CodeAgent";
         String ansiAssistant = JLineTerminalScreen.styleLine(assistant).toAnsi(terminal);
 
         assertTrue(ansiAssistant.contains("\u001B["), ansiAssistant);
@@ -213,10 +250,10 @@ class JLineTerminalScreenTest {
 
         JLineTerminalScreen screen = new JLineTerminalScreen(terminal);
         screen.redraw(new RenderFrame(32, 3, List.of(
-                assistant + " ".repeat(3),
-                "● Ready" + " ".repeat(25),
-                "› " + " ".repeat(30)
-        ), 3, 3));
+                assistant + " ",
+                "  ● Ready" + " ".repeat(23),
+                "  › " + " ".repeat(28)
+        ), 3, 5));
         screen.close();
 
         String outputText = output.toString(StandardCharsets.UTF_8);

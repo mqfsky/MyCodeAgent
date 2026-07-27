@@ -69,31 +69,44 @@ public final class StudyBankStore {
     }
 
     /**
-     * Atomically replaces the complete current bank.
+     * 不直接覆盖 bank.json，而是先完整写入临时文件，确认落盘后再原子替换，避免程序中断时留下半份题库。
      */
     public void write(ObjectNode bank) {
+        // 先做防御性深拷贝，避免调用方在序列化期间继续修改传入的可变 JSON 节点。
         ObjectNode snapshot = Objects.requireNonNull(bank, "bank").deepCopy();
         byte[] bytes;
         try {
+            // bank统一序列化成 UTF-8，并补一个换行，便于人工查看和命令行工具读取。
             bytes = (MAPPER.writeValueAsString(snapshot) + "\n").getBytes(StandardCharsets.UTF_8);
         } catch (JsonProcessingException exception) {
             throw new IllegalArgumentException("Unable to serialize study bank", exception);
         }
 
+        // 真正写文件前先确保受控目录存在，并拒绝覆盖符号链接或非普通文件。
         ensureStudyDirectory();
         rejectUnsafeExistingTarget(bankPath, "study bank");
+
+        // temporary 同时表示临时文件路径和清理责任；成功移动后会置空，避免 finally 再处理。
         Path temporary = null;
         try {
+            // 创建临时文件，临时文件必须创建在题库同级目录，才能保证后面的原子移动发生在同一文件系统内。
+            // 文件名类似 .bank.123456789.tmp
             temporary = Files.createTempFile(studyDirectory, ".bank.", ".tmp");
             rejectSymbolicLink(temporary, "temporary study bank");
+
+            // 先把完整内容写入临时文件并强制刷盘，目标 bank.json 此时仍保持原样。
             writeAndForce(temporary, bytes);
+
+            // 写临时文件期间目标可能被其他进程替换，因此移动前再次校验目标类型。
             rejectUnsafeExistingTarget(bankPath, "study bank");
+            // 原子替换
             Files.move(
                     temporary,
                     bankPath,
-                    StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING
+                    StandardCopyOption.ATOMIC_MOVE, // 整个替换操作不可分割，读取者只会看到完整旧文件或完整新文件。
+                    StandardCopyOption.REPLACE_EXISTING // 允许替换现有 bank.json
             );
+            // 临时文件已经成为正式 bank.json，当前方法不再负责清理临时路径。
             temporary = null;
         } catch (AtomicMoveNotSupportedException exception) {
             throw new IllegalStateException(
@@ -105,7 +118,7 @@ public final class StudyBankStore {
                 try {
                     Files.deleteIfExists(temporary);
                 } catch (IOException ignored) {
-                    // Preserve the authoritative write failure. A unique temp file is never a bank.
+                    // 保留真正的写入异常；唯一命名的残留临时文件不会被当作正式题库读取。
                 }
             }
         }

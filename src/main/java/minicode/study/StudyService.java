@@ -43,7 +43,7 @@ public final class StudyService {
     public static final int DEFAULT_QUIZ_COUNT = 3;
     public static final int MAX_QUIZ_COUNT = 20;
     private static final int BANK_SCHEMA_VERSION = 1;
-    private static final int MAX_IMPORT_BYTES = 5 * 1024 * 1024;
+    private static final int MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5MB
     private static final int MAX_QUESTIONS = 10_000;
     private static final int MAX_CHAPTER_CHARS = 500;
     private static final int MAX_QUESTION_CHARS = 2_000;
@@ -109,23 +109,39 @@ public final class StudyService {
 
     /** 从固定 imports 目录读取严格 Markdown，并以该文件原子替换整个当前题库。 */
     public synchronized StudyImportResult importBank(String relativeFile) {
+        // 获取题库目录
         Path display = importsDirectory.resolve(
                 relativeFile == null || relativeFile.isBlank() ? "<missing>" : relativeFile).normalize();
         try {
+            // 确保导入目录存在
             ensureImportsDirectory();
+            // 获取文件真实路径
             Path source = resolveImportSource(relativeFile);
+            // 读取为字节，限制文件大小
             byte[] bytes = readBoundedUtf8Bytes(source);
+            // 解码
             String markdown = decodeUtf8(bytes);
+            // 将 md 文件解析为题目
             List<StudyQuestion> questions = parser.parse(markdown);
+            // 做题库规模校验
+            // 题目总数   <= 10_000
+            // 章节长度   <= 500
+            // 题目长度   <= 2_000
+            // 答案长度   <= 100_000
             validateQuestionBounds(questions);
+            // 计算整个源文件的哈希
             String contentHash = StudyHash.contentHash(markdown);
-
+            // 读取并验证旧题库未损坏
             Optional<ObjectNode> existing = readableExistingBank();
+            // 如果旧题库存在 && 源文件哈希相同 && 解析出的题目相同
+            // 认为题库不变
             if (existing.isPresent()
                     && contentHash.equals(existing.orElseThrow().path("contentHash").asText())
                     && questions.equals(questionsFromBank(existing.orElseThrow()))) {
+                // 没变化则返回 nochange
                 return StudyImportResult.noChange(source, existing.orElseThrow().path("questions").size());
             }
+            // 创建临时文件，原子替换
             bankStore.write(bankJson(source.getFileName().toString(), contentHash, questions));
             return StudyImportResult.imported(source, questions.size());
         } catch (StudyParseException exception) {
@@ -507,8 +523,10 @@ public final class StudyService {
 
     private void ensureImportsDirectory() {
         try {
+            // 拒绝符号链接
             rejectSymbolicLink(studyDirectory);
             rejectSymbolicLink(importsDirectory);
+            // 若父目录不存在则创建父目录
             Files.createDirectories(importsDirectory);
         } catch (IOException exception) {
             throw new StudyException("Unable to create study imports directory", exception);

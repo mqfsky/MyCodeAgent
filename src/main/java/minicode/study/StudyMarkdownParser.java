@@ -20,20 +20,27 @@ public final class StudyMarkdownParser {
     private static final int MAX_CHAPTER_CHARS = 500;
     private static final int MAX_QUESTION_CHARS = 2_000;
 
+    /**
+     * 逐行扫描 Markdown，识别章节、题目、答案和代码围栏，把合法内容转换成 List<StudyQuestion>
+     * 如果格式不合法，则收集错误后统一抛出。
+     */
     public List<StudyQuestion> parse(String markdown) {
         if (markdown == null) {
             throw new NullPointerException("markdown");
         }
+        // 按行读取 md 文件
         String[] lines = markdown.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
         ParserState state = new ParserState();
 
         for (int index = 0; index < lines.length; index++) {
             int lineNumber = index + 1;
+            // 同时保存原始行和去掉前导空格的行
             String line = lines[index];
             String stripped = line.stripLeading();
 
+            // 判断是否在代码部分
             if (state.inFence()) {
-                if (state.closesFence(stripped)) {
+                if (state.closesFence(stripped)) { // 判断当前行是否关闭代码围栏
                     state.acceptFence(line, stripped, lineNumber);
                 } else {
                     state.acceptAnswerLine(line);

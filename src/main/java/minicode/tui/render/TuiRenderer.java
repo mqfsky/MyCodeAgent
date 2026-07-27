@@ -9,6 +9,10 @@ import java.util.Objects;
 public final class TuiRenderer {
     private static final int CHROME_ROWS = 4;
     private static final int TOOL_PREVIEW_LINES = 7;
+    private static final String NORMAL_PLACEHOLDER = "Ask CodeAgent to build, explain, or fix something…";
+    private static final String ANSWER_PLACEHOLDER = "Type your answer…";
+    private static final String PERMISSION_PLACEHOLDER = "Choose an option…";
+    private static final String FEEDBACK_PLACEHOLDER = "Add a reason…";
 
     public RenderFrame render(RenderState state, TerminalSize size) {
         Objects.requireNonNull(state, "state");
@@ -21,7 +25,7 @@ public final class TuiRenderer {
         ArrayList<String> lines = new ArrayList<>(height);
         lines.add(fit(headerText(width), width));
         lines.addAll(renderTranscript(transcriptLines, width, transcriptRows, scrollOffset));
-        lines.add(fit("─".repeat(width), width));
+        lines.add(fit(horizontalRule(width), width));
         lines.add(fit(statusText(state, scrollOffset), width));
         lines.add(fit(inputText(state.input()), width));
         return new RenderFrame(width, height, lines, height, inputCursorColumn(state.input(), width));
@@ -49,36 +53,36 @@ public final class TuiRenderer {
 
     private static List<String> renderBlock(TranscriptBlock block) {
         return switch (block.kind()) {
-            case USER -> prefixed("❯ You › ", plainLines(block.text()), "        ");
-            case USER_ANSWER -> prefixed("❯ Answer › ", plainLines(block.text()), "           ");
-            case ASSISTANT -> prefixed("● CodeAgent › ", TerminalMarkdown.render(block.text()), "  ");
-            case PROGRESS -> prefixed("· Working › ", plainLines(block.text()), "  ");
+            case USER -> prefixed("  ❯ You › ", plainLines(block.text()));
+            case USER_ANSWER -> prefixed("  ❯ Answer › ", plainLines(block.text()));
+            case ASSISTANT -> prefixed("  ● CodeAgent › ", TerminalMarkdown.render(block.text()));
+            case PROGRESS -> prefixed("  · Working › ", plainLines(block.text()));
             case TOOL -> renderTool(block);
-            case ASK_USER -> prefixed("? Question › ", plainLines(block.text()), "  ");
-            case PERMISSION -> prefixed("! Permission › ", plainLines(block.text()), "  ");
-            case DIAGNOSTIC -> prefixed("· ", plainLines(block.text()), "  ");
-            case COMPACT -> prefixed("↻ Context › ", plainLines(block.text()), "  ");
-            case AGENT_TASK -> prefixed("◎ Agent task › ", plainLines(block.text()), "  ");
+            case ASK_USER -> prefixed("  ? Question › ", plainLines(block.text()));
+            case PERMISSION -> prefixed("  ! Permission › ", plainLines(block.text()));
+            case DIAGNOSTIC -> prefixed("  · ", plainLines(block.text()));
+            case COMPACT -> prefixed("  ↻ Context › ", plainLines(block.text()));
+            case AGENT_TASK -> prefixed("  ◎ Agent task › ", plainLines(block.text()));
         };
     }
 
     private static List<String> renderTool(TranscriptBlock block) {
         if (block.toolName().isEmpty() || block.toolStatus().isEmpty()) {
-            return prefixed("◇ Tool › ", plainLines(block.text()), "  ");
+            return prefixed("  ◇ Tool › ", plainLines(block.text()));
         }
         String status = switch (block.toolStatus().orElseThrow()) {
             case RUNNING -> "…";
             case OK -> "✓";
             case ERROR -> "✗";
         };
-        String heading = "◇ " + block.toolName().orElseThrow() + "  " + status;
+        String heading = "  ◇ " + block.toolName().orElseThrow() + "  " + status;
         if (block.text().isBlank()) {
             return List.of(heading);
         }
         ArrayList<String> lines = new ArrayList<>();
         lines.add(heading);
         for (String line : boundedToolLines(block.text())) {
-            lines.add("  │ " + line);
+            lines.add("    │ " + line);
         }
         return List.copyOf(lines);
     }
@@ -101,9 +105,10 @@ public final class TuiRenderer {
         return List.of(text.replace("\r", "").split("\n", -1));
     }
 
-    private static List<String> prefixed(String firstPrefix, List<String> content, String continuationPrefix) {
+    private static List<String> prefixed(String firstPrefix, List<String> content) {
         ArrayList<String> result = new ArrayList<>();
         List<String> actualContent = content.isEmpty() ? List.of("") : content;
+        String continuationPrefix = "    ";
         result.add(firstPrefix + actualContent.getFirst());
         for (int index = 1; index < actualContent.size(); index++) {
             result.add(continuationPrefix + actualContent.get(index));
@@ -136,6 +141,7 @@ public final class TuiRenderer {
                 lines.add("");
                 continue;
             }
+            String continuationIndent = continuationIndent(rawLine, width);
             StringBuilder line = new StringBuilder();
             int lineWidth = 0;
             for (int index = 0; index < rawLine.length(); ) {
@@ -143,8 +149,10 @@ public final class TuiRenderer {
                 int charWidth = DisplayText.isWide(codePoint) ? 2 : 1;
                 if (lineWidth > 0 && lineWidth + charWidth > width) {
                     lines.add(line.toString());
-                    line.setLength(0);
-                    lineWidth = 0;
+                    int indentWidth = DisplayText.width(continuationIndent);
+                    String nextIndent = indentWidth + charWidth <= width ? continuationIndent : "";
+                    line = new StringBuilder(nextIndent);
+                    lineWidth = DisplayText.width(nextIndent);
                 }
                 if (charWidth <= width) {
                     line.appendCodePoint(codePoint);
@@ -157,6 +165,14 @@ public final class TuiRenderer {
             }
         }
         return lines;
+    }
+
+    private static String continuationIndent(String line, int width) {
+        int spaces = 0;
+        while (spaces < line.length() && spaces < 4 && line.charAt(spaces) == ' ') {
+            spaces++;
+        }
+        return spaces < width ? " ".repeat(spaces) : "";
     }
 
     private static String fit(String text, int width) {
@@ -176,13 +192,25 @@ public final class TuiRenderer {
     }
 
     private static String headerText(int width) {
-        String title = " CodeAgent ";
+        String title = "  ◆ CodeAgent ";
+        String hint = " ↑↓ history  ";
+        int dividerWidth = width - DisplayText.width(title) - DisplayText.width(hint);
+        if (dividerWidth >= 3) {
+            return title + "─".repeat(dividerWidth) + hint;
+        }
         return title + "─".repeat(Math.max(0, width - DisplayText.width(title)));
+    }
+
+    private static String horizontalRule(int width) {
+        if (width <= 4) {
+            return "─".repeat(width);
+        }
+        return "  " + "─".repeat(width - 4) + "  ";
     }
 
     private static String statusText(RenderState state, int scrollOffset) {
         String base = state.status().text().orElse("Ready");
-        StringBuilder text = new StringBuilder("● ").append(base);
+        StringBuilder text = new StringBuilder("  ● ").append(base);
         state.contextBadge().ifPresent(badge -> text.append("  ·  ").append(badge));
         if (scrollOffset > 0) {
             text.append("  ·  history ↑ ").append(scrollOffset);
@@ -192,22 +220,32 @@ public final class TuiRenderer {
 
     private static String inputText(InputState input) {
         String prompt = switch (input.mode()) {
-            case NORMAL -> "› ";
-            case BUSY -> "… ";
-            case AWAITING_ASK_USER -> "answer › ";
-            case PENDING_PERMISSION -> "allow › ";
-            case PERMISSION_FEEDBACK -> "feedback › ";
+            case NORMAL -> "  › ";
+            case BUSY -> "  … ";
+            case AWAITING_ASK_USER -> "  answer › ";
+            case PENDING_PERMISSION -> "  allow › ";
+            case PERMISSION_FEEDBACK -> "  feedback › ";
         };
-        return prompt + input.text();
+        if (!input.text().isEmpty() || input.mode() == InputState.Mode.BUSY) {
+            return prompt + input.text();
+        }
+        String placeholder = switch (input.mode()) {
+            case NORMAL -> NORMAL_PLACEHOLDER;
+            case AWAITING_ASK_USER -> ANSWER_PLACEHOLDER;
+            case PENDING_PERMISSION -> PERMISSION_PLACEHOLDER;
+            case PERMISSION_FEEDBACK -> FEEDBACK_PLACEHOLDER;
+            case BUSY -> "";
+        };
+        return prompt + placeholder;
     }
 
     private static int inputCursorColumn(InputState input, int width) {
         int promptLength = switch (input.mode()) {
-            case NORMAL -> DisplayText.width("› ");
-            case BUSY -> DisplayText.width("… ");
-            case AWAITING_ASK_USER -> DisplayText.width("answer › ");
-            case PENDING_PERMISSION -> DisplayText.width("allow › ");
-            case PERMISSION_FEEDBACK -> DisplayText.width("feedback › ");
+            case NORMAL -> DisplayText.width("  › ");
+            case BUSY -> DisplayText.width("  … ");
+            case AWAITING_ASK_USER -> DisplayText.width("  answer › ");
+            case PENDING_PERMISSION -> DisplayText.width("  allow › ");
+            case PERMISSION_FEEDBACK -> DisplayText.width("  feedback › ");
         };
         String visibleBeforeCursor = input.text().substring(0, Math.min(input.cursor(), input.text().length()));
         return Math.min(width, promptLength + DisplayText.width(visibleBeforeCursor) + 1);

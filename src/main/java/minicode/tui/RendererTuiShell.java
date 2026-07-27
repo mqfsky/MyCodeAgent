@@ -357,11 +357,11 @@ public final class RendererTuiShell {
             runMemoryCommand();
             return true;
         }
-        if ("/study".equals(trimmed)) {
+        if ("/study".equals(trimmed)) { // 返回学习报告
             runStudyReportCommand();
             return true;
         }
-        if (isStudyImportCommand(trimmed)) {
+        if (isStudyImportCommand(trimmed)) { // 导入题库，并返回导入结果，在 UI上显示
             runStudyImportCommand(studyImportArgument(trimmed));
             return true;
         }
@@ -375,6 +375,7 @@ public final class RendererTuiShell {
         }
         boolean answerMode;
         synchronized (lock) {
+            // 当前用户输入，是一条普通新消息，还是对 ask_user 工具问题的回答。
             answerMode = state.input().mode() == InputState.Mode.AWAITING_ASK_USER;
         }
         startTurn(line, answerMode);
@@ -585,6 +586,7 @@ public final class RendererTuiShell {
 
     private void startTurn(String line, boolean answerMode) {
         UserMessage userMessage = new UserMessage(line);
+        // 创建独立线程执行 AgentTurn
         Thread thread = new Thread(
                 new UserTurnRunner(this, userMessage),
                 "minicode-renderer-turn");
@@ -598,11 +600,13 @@ public final class RendererTuiShell {
             appendTranscriptLocked(answerMode
                     ? TranscriptBlock.userAnswer(userMessage.content())
                     : TranscriptBlock.user(userMessage.content()));
+            // 输入框接换到忙碌状态，暂时不能编辑
             state = state.withInput(InputState.of(InputState.Mode.BUSY, "", 0))
                     .withStatus(StatusState.thinking());
             activeTurn = thread;
             redrawLocked();
         }
+        // runUserTurnInBackground
         thread.start();
     }
 
