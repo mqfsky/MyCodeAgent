@@ -55,7 +55,6 @@ public final class ToolRegistry implements ToolExecutor {
 
             // 校验输入
             validation = tool.validateInput(actualCall.input());
-
             actualToolContext.cancellationToken().throwIfCancellationRequested(CancellationPhase.TOOL_EXECUTION);
         } catch (CancellationRequestedException exception) {
             throw exception;

@@ -1,83 +1,104 @@
-# CodeAgent
+# CodeGrowth
 
-CodeAgent 是一个使用 Java 21 编写的、本地优先个人助手，软件工程是它的主要能力。
+> 一个使用 Java 21 构建的、本地优先的个人开发者 Agent，以软件工程为主要能力，并扩展了子 Agent、学习复习、个人记忆、Skills、MCP 和飞书日历。
 
-它围绕一条完整的 `模型 -> 工具 -> 模型` 执行链工作：理解用户任务，读取和搜索代码，调用本地工具完成修改或验证，再把工具结果交还给模型继续判断。同时，CodeAgent 提供权限确认、可恢复会话、上下文压缩、项目记忆、Skills 和 MCP 扩展能力。
+CodeGrowth 不只是把问题发给模型。它维护了一条完整的 Agent 执行链：模型先理解任务并选择工具，运行时完成参数校验、权限审查和工具执行，再把结果交回模型继续判断，直到任务完成。
 
-> 当前项目主要用于学习、实验和验证 Coding Agent 的核心运行机制，尚未按生产级产品标准完善。请在版本控制环境中使用，并在提交前检查 Agent 产生的修改。
+项目目前适合用来学习和验证 Coding Agent 的核心机制，也可以在受版本控制保护的代码仓库中完成小规模开发任务。它仍是持续迭代中的个人项目，尚未达到生产级沙箱、评测、可观测性和跨平台发布标准。
 
-## 主要能力
+> 兼容性说明：仓库与项目展示名称已更新为 CodeGrowth；当前 CLI 命令、JAR、环境变量、配置目录和项目规则文件仍沿用 `codeagent`、`CODEAGENT_*`、`.codeagent` 与 `CODEAGENT.md`。
 
-- 支持 Anthropic-compatible 和 OpenAI-compatible 模型服务。
-- 提供文件读取、目录遍历、文本搜索、文件写入、精确编辑、批量补丁和命令执行工具。
-- 在路径访问、命令执行、文件修改和 MCP 工具调用前进行权限检查。
-- 使用 append-only JSONL 保存会话，支持列出、重命名、恢复和分叉会话。
-- 支持手动 `/compact` 和自动上下文压缩，避免长对话无限膨胀。
-- 支持 `CODEAGENT.md`、`AGENTS.md` 和 `.codeagent/rules/*.md` 分层项目记忆。
-- 可选启用异步个人记忆：提取长期用户信息、项目工作偏好和未来计划，并在启动时展示今日与逾期计划。
-- 支持从严格 Markdown 录入八股题库，按会话答题、追问和评分，并根据全局历史自适应复习。
-- 支持从项目级、用户级和兼容目录发现 `SKILL.md`，按需加载完整 Skill。
-- 支持通过 stdio 或 Streamable HTTP 连接 MCP Server，并把远端能力注册为 Agent 工具。
-- 可选接入个人飞书主日历，以强类型工具创建私密日程，并在每次外部写入前展示确认信息。
-- 提供全屏 Renderer TUI；终端能力不足时自动回退到普通行模式。
+## 项目定位
 
-## 工作流程
+CodeGrowth 面向个人开发者，当前包含三层能力：
+
+1. **Coding Agent 核心闭环**：理解代码、搜索文件、修改实现、运行命令和验证结果。
+2. **可持续工作的运行时**：权限控制、JSONL 会话、上下文压缩、项目规则、子 Agent 和扩展工具。
+3. **开发者个人助手能力**：八股复习、个人记忆、计划查询，以及经确认后创建飞书日历事件。
+
+编码仍然是主能力。学习、记忆和日历能力都复用同一套 Agent Runtime，而不是绕开权限与工具链单独执行。
+
+## 核心能力
+
+| 能力 | 当前实现 |
+| --- | --- |
+| 模型接入 | 通过 LangChain4j 低层 `ChatModel` 适配 Anthropic-compatible 与 OpenAI-compatible 服务；CodeGrowth 自己保留 AgentLoop 和工具执行语义 |
+| 代码工具 | 文件读取、目录遍历、文本搜索、文件写入、精确编辑、批量补丁、命令执行 |
+| 权限控制 | 路径、命令、文件修改、MCP 和外部写操作在执行前进入权限审查 |
+| 会话 | append-only JSONL，支持列表、重命名、恢复和分叉 |
+| 上下文治理 | 大工具结果外置、`microCompact`、自动压缩和手动 `/compact` |
+| 子 Agent | `explore`、`plan`、`general-purpose` 三种角色，支持同步或后台执行 |
+| 项目记忆 | 分层加载 `AGENTS.md`、`CODEAGENT.md` 和 `.codeagent/rules/*.md` |
+| 个人记忆 | 可选的异步提取，记录用户信息、项目偏好与计划；默认关闭 |
+| Study | 从 Markdown 导入题库，支持出题、追问、评分、恢复和复习统计 |
+| Skills | 启动时发现 `SKILL.md`，模型按需加载完整工作流 |
+| MCP | 支持 stdio 与 Streamable HTTP，远端工具进入统一注册表和权限链 |
+| 飞书日历 | 通过 `lark-cli` 创建当前用户主日历事件，每次写入前确认 |
+| 终端界面 | 全屏 Renderer TUI；终端能力不足时回退到普通行模式 |
+
+## 运行架构
+
+![CodeGrowth AgentLoop 架构](docs/images/codeagent-agentloop-architecture.png)
+
+核心循环可以简化为：
 
 ```text
 用户输入
-  -> MiniTui / RendererTuiShell
+  -> TUI
   -> ApplicationServices
   -> AgentLoop
-       -> ModelAdapter 生成回复或工具调用
+       -> 刷新 System Prompt / Memory / Skills / Study 状态
+       -> ModelAdapter 请求模型
+       -> AssistantStep 或 ToolCallsStep
        -> ToolRegistry 校验并执行工具
-       -> PermissionService 处理敏感操作授权
-       -> ContextManager 控制工具结果和上下文体积
+       -> PermissionService 审查敏感操作
+       -> ToolResultMessage 回到下一次模型请求
   -> SessionPersistenceRunner
   -> SessionStore 追加写入 JSONL
 ```
 
-普通自然语言任务由模型理解；`/compact`、`/memory`、`/study`、`/init`、`/skill` 等本地命令由 TUI 直接识别，不会进入模型调用链。
+这里有两个重要边界：
 
-## 环境要求
+- LangChain4j 只负责 Provider/模型适配，不接管 CodeGrowth 的 AgentLoop、权限、会话、上下文和工具执行。
+- 子 Agent 拥有独立上下文、独立 AgentLoop 和经过角色过滤的工具表，但继续复用父级权限边界。
+
+## 快速开始
+
+### 1. 环境要求
 
 - JDK 21
 - Maven 3.9+
-
-检查本地环境：
 
 ```bash
 java -version
 mvn -version
 ```
 
-## 构建
+### 2. 构建
 
-在 CodeAgent 源码目录执行：
+在源码目录执行：
 
 ```bash
-mvn test
-mvn package
+mvn clean package
 ```
 
-主要构建产物：
+构建完成后会生成：
 
 ```text
 target/codeagent.jar
 target/dist/codeagent/lib/codeagent.jar
 ```
 
-`target/codeagent.jar` 是包含运行依赖的 fat jar，可以直接启动：
+检查可运行 JAR：
 
 ```bash
 java -jar target/codeagent.jar --version
 java -jar target/codeagent.jar --help
 ```
 
-## 快速开始
+### 3. 配置模型
 
-### 1. 配置模型
-
-推荐把个人模型配置写入：
+推荐把个人配置写入：
 
 ```text
 ~/.codeagent/settings.json
@@ -90,7 +111,9 @@ OpenAI-compatible 示例：
   "provider": "openai-compatible",
   "model": "your-model",
   "baseUrl": "https://your-provider.example/v1",
-  "apiKey": "your-api-key"
+  "apiKey": "your-api-key",
+  "maxOutputTokens": 8192,
+  "contextWindow": 128000
 }
 ```
 
@@ -105,15 +128,15 @@ Anthropic-compatible 示例：
 }
 ```
 
-支持的 `provider` 值：
+支持的 `provider`：
 
-| 配置值 | 说明 |
+| 配置值 | 协议 |
 | --- | --- |
-| `anthropic`、`anthropic-compatible` | 使用 Anthropic Messages API 兼容协议 |
-| `openai`、`openai-compatible` | 使用 OpenAI Chat Completions 兼容协议 |
-| `mock` | 本地测试模式，不请求真实模型服务 |
+| `anthropic`、`anthropic-compatible` | Anthropic Messages API compatible |
+| `openai`、`openai-compatible` | OpenAI Chat Completions compatible |
+| `mock` | 本地测试模式，不访问真实模型 |
 
-也可以使用环境变量：
+也可以通过环境变量配置：
 
 ```bash
 export CODEAGENT_PROVIDER="openai-compatible"
@@ -122,34 +145,349 @@ export ANTHROPIC_BASE_URL="https://your-provider.example/v1"
 export ANTHROPIC_API_KEY="your-api-key"
 ```
 
-当前支持的主要配置项包括：
+`ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY` 和 `ANTHROPIC_AUTH_TOKEN` 是当前保留的兼容变量名，对 OpenAI-compatible Provider 同样生效。
 
-- `provider`：模型服务类型。
-- `model`：模型名称。
-- `baseUrl`：模型服务地址。
-- `apiKey` / `authToken`：鉴权信息。
-- `maxOutputTokens`：单次模型输出上限。
-- `contextWindow`：模型上下文窗口大小。
-- `maxSteps`：单轮 Agent 最大执行步数。
-- `providerTimeoutSeconds`：模型请求超时时间，默认 300 秒。
-- `mcpServers`：MCP Server 配置。
-- `integrations.feishuCalendar`：用户级飞书日历创建工具配置。
-- `memory`：用户级自动个人记忆配置。
-
-配置加载优先级为：
+配置优先级：
 
 ```text
-环境变量
+进程环境变量
   > 当前项目 .codeagent/settings.json
   > 用户目录 ~/.codeagent/settings.json
   > 内置默认值
 ```
 
-建议把 API Key 放在用户级配置或环境变量中，不要把真实密钥提交到 Git。
+请不要把真实密钥提交到仓库。
 
-### 2. 配置飞书日历（可选）
+### 4. 在目标项目中启动
 
-飞书日历集成只从用户级 `~/.codeagent/settings.json` 读取，项目配置不能覆盖个人身份、CLI 路径或目标日历：
+进入希望 CodeGrowth 操作的项目目录：
+
+```bash
+cd /path/to/your/project
+java -jar /path/to/codeagent/target/codeagent.jar
+```
+
+也可以显式指定工作区：
+
+```bash
+java -jar /path/to/codeagent/target/codeagent.jar --cwd /path/to/your/project
+```
+
+启动后直接描述任务：
+
+```text
+解释这个项目的启动流程
+定位当前失败测试的原因
+给这个接口增加参数校验并补充测试
+重构这段逻辑，保持现有行为不变
+```
+
+## CLI
+
+下表使用 `codeagent` 作为命令名简写。未安装 launcher 时，请替换为 `java -jar /path/to/codeagent.jar`。
+
+| 命令 | 作用 |
+| --- | --- |
+| `codeagent` | 在当前工作区创建新会话 |
+| `codeagent --cwd <path>` | 指定工作区 |
+| `codeagent --resume <id>` | 恢复当前工作区下的会话 |
+| `codeagent --fork <id>` | 基于已有会话创建新会话 |
+| `codeagent session list` | 列出当前工作区的会话 |
+| `codeagent session rename <id> <title>` | 重命名会话 |
+| `codeagent --max-steps <n>` | 设置单轮最大步骤数，范围 1–100 |
+| `codeagent --version` | 显示版本 |
+| `codeagent --help` | 显示帮助 |
+
+示例：
+
+```bash
+java -jar target/codeagent.jar session list
+java -jar target/codeagent.jar --resume <session-id>
+java -jar target/codeagent.jar --fork <session-id>
+```
+
+## 对话内命令
+
+这些命令由 TUI 本地处理，不会作为普通用户消息发给模型：
+
+| 命令 | 作用 |
+| --- | --- |
+| `/init` | 检测项目结构并生成适用的项目规则文件 |
+| `/memory` | 查看项目记忆、个人记忆路径和提取队列状态，不打印个人记忆正文 |
+| `/study` | 查看题库、事件文件和累计答题概况 |
+| `/study <文件名.md>` | 从固定导入目录录入或更新题库 |
+| `/skill` | 列出本次启动发现的 Skills |
+| `/compact` | 手动压缩当前会话上下文 |
+| `exit`、`quit` | 退出 CodeGrowth |
+
+## 关键机制
+
+### 代码工具与权限
+
+内置 Coding 工具统一注册到 `ToolRegistry`：
+
+```text
+read_file       list_files      grep_files
+write_file      edit_file       patch_file
+modify_file     run_command      ask_user
+load_skill      agent
+```
+
+模型输出始终被视为不可信输入。敏感路径访问、命令执行、文件修改、MCP 调用和外部写入会进入 `PermissionService`，用户可以：
+
+- 仅允许一次；
+- 在当前 turn 内允许；
+- 始终允许；
+- 仅拒绝一次；
+- 始终拒绝；
+- 拒绝并向 Agent 提供反馈。
+
+长期允许或拒绝规则保存在：
+
+```text
+~/.codeagent/permissions.json
+```
+
+权限控制不是操作系统级沙箱。请在 Git 仓库或可恢复副本中运行，并在提交前审阅 diff。
+
+### 会话与上下文
+
+会话默认保存在：
+
+```text
+~/.codeagent/sessions/
+```
+
+每个 session 使用 append-only JSONL 记录用户消息、模型回复、工具调用、工具结果、压缩边界和元数据。会话按工作区绝对路径隔离，因此恢复时需要回到原工作区，或提供相同的 `--cwd`。
+
+长对话通过三层机制控制体积：
+
+1. 大型工具结果写入 `~/.codeagent/tool-results/`，上下文只保留引用与预览。
+2. `microCompact` 不调用模型，优先清理历史中的旧工具结果。
+3. 压力仍然较高时执行自动语义压缩，也可以手动输入 `/compact`。
+
+### 子 Agent
+
+父 Agent 可以通过 `agent` 工具委派独立任务：
+
+| 角色 | 用途 | 工具边界 | 最大步骤 |
+| --- | --- | --- | --- |
+| `explore` | 代码搜索和证据收集 | 只读工具与只读命令 | 30 |
+| `plan` | 架构分析和实施计划 | 只读工具与只读命令 | 15 |
+| `general-purpose` | 聚焦的实现任务 | 读取、写入和命令 | 200 |
+
+三种角色都支持同步与后台执行。子 Agent：
+
+- 继承当前 Provider 和模型；
+- 不复制父会话历史，只接收专用提示词和委派任务；
+- 拥有独立上下文、工具表和 AgentLoop；
+- 禁止再次调用 `agent` 或 `ask_user`；
+- 文件、命令和 MCP 操作仍经过父级权限链；
+- 不创建隐藏 session，也不把内部消息写入父 session。
+
+后台任务使用 Java 21 虚拟线程并保存在当前进程内。任务状态和通知不会落盘，应用退出或崩溃后不能恢复；它不是跨进程、多节点的协作系统。
+
+更完整的设计边界见 [多 Agent 迁移规范](docs/multi-agent-migration-spec.md)。
+
+### 项目记忆
+
+项目记忆是显式维护的 Markdown 规则，不会因为用户说“记住”就自动改写。CodeGrowth 会在每次模型请求前重新加载：
+
+```text
+AGENTS.md
+CODEAGENT.md
+.codeagent/rules/*.md
+```
+
+输入 `/init` 后，CodeGrowth 会检测 Java、Maven 和 Gradle 项目，并在对应文件不存在时生成：
+
+```text
+CODEAGENT.md
+.codeagent/
+└── rules/
+    ├── project.md
+    ├── java.md
+    ├── maven.md
+    └── gradle.md
+```
+
+它还兼容用户级、项目级和子目录级规则，以及 `.mini-code/rules/*.md`。更具体目录下的规则优先级更高。
+
+### 自动个人记忆
+
+自动个人记忆默认关闭，只能由用户级 `~/.codeagent/settings.json` 开启：
+
+```json
+{
+  "memory": {
+    "enabled": true,
+    "timezone": "Asia/Shanghai"
+  }
+}
+```
+
+开启后，主 turn 完成并持久化后会异步提交一次受限记忆提取。专用 Agent 只能使用 `read_memory_file` 和 `write_memory_file`，不能调用普通文件、命令、MCP、飞书、Skill 或公开子 Agent 工具。
+
+记忆分为：
+
+| 类型 | 路径 | 用途 |
+| --- | --- | --- |
+| `user` | `~/.codeagent/memory/user.md` | 用户身份、职责、长期目标和知识背景 |
+| `feedback` | `<project>/.codeagent/memory/feedback.md` | 当前项目中的工作偏好和明确纠正 |
+| `plan` | `~/.codeagent/memory/plan.md` | 待办、完成、取消和日期待定计划 |
+
+`user.md` 和当前项目的 `feedback.md` 会作为可能过期的参考信息注入主 Agent；当前请求和显式项目规则始终优先。`plan.md` 不整体注入 Prompt，主 Agent 通过只读 `query_plan` 查询。
+
+记忆写入使用固定路径、Markdown 结构校验、原子替换和基于哈希的并发检查。主对话不等待提取完成；只有存储确认文件实际变化后，界面才会显示更新通知。
+
+实现方案见 [个人记忆提取与加载计划](docs/memory-extraction-plan.md)。
+
+### Study：八股复习
+
+Study 使用用户自己的 Markdown 笔记作为题目和标准答案来源。先准备固定导入目录：
+
+```bash
+mkdir -p ~/.codeagent/study/imports
+cp "/path/to/Java interview notes.md" ~/.codeagent/study/imports/
+```
+
+题库采用严格的两级标题：
+
+```md
+# JVM
+
+## JVM 的运行时数据区有哪些
+
+这里填写标准答案正文。
+
+## 类加载过程分为哪几个阶段
+
+这里填写另一道题的标准答案。
+```
+
+一级标题是章节，二级标题是题目，二级标题后的正文是标准答案。答案不能为空，也不需要额外编写 `### 答案`。
+
+进入 CodeGrowth 后导入：
+
+```text
+/study Java interview notes.md
+/study
+```
+
+然后可以使用自然语言：
+
+```text
+给我出 3 道 JVM 八股题
+回答第 1 题：……
+追问第 1 题：这里具体分哪几步？
+我不会第 2 题
+查看我的复习进度和重点方向
+```
+
+当前 Study 具有以下边界：
+
+- 单次默认 3 题，最多 20 题；
+- 题目和标准答案必须来自本地题库；
+- 回答、追问、跳过、评分和题组完成都通过强类型工具推进；
+- 待评分答案必须先保存评审，Agent 才能结束当前 turn；
+- 抽题优先考虑新题、答案版本变化、历史跳过、低分和较久未复习的题；
+- 题库使用原子快照，答题过程使用追加事件；
+- 题库和历史在不同工作区间共享，进行中题组按 session 隔离并可恢复。
+
+数据统一位于：
+
+```text
+~/.codeagent/study/
+├── imports/
+├── bank.json
+└── events.jsonl
+```
+
+重新导入会把该 Markdown 文件视为完整、权威的当前题库；旧题库中缺失的题不会再进入新题组，但既有答题历史和已经开始的题组快照会保留。
+
+### Skills
+
+Skill 是一个带有工作流说明的 `SKILL.md`。启动时只加载名称和简介，匹配任务后再通过 `load_skill` 读取完整内容。
+
+推荐结构：
+
+```text
+.codeagent/
+└── skills/
+    └── code-review/
+        └── SKILL.md
+```
+
+示例：
+
+```md
+---
+description: 审查 Java 修改，并检查测试、异常处理和资源释放。
+---
+
+# Code Review
+
+1. 检查修改范围和真实调用链。
+2. 检查行为变化是否有测试覆盖。
+3. 运行与改动相关的验证命令。
+```
+
+发现顺序：
+
+1. `<workspace>/.codeagent/skills/`
+2. `~/.codeagent/skills/`
+3. `<workspace>/.mini-code/skills/`
+4. `~/.mini-code/skills/`
+5. `<workspace>/.claude/skills/`
+6. `~/.claude/skills/`
+
+同名 Skill 只保留优先级最高的一个。新增或修改后需要重启 CodeGrowth。
+
+### MCP
+
+CodeGrowth 支持 stdio 与 Streamable HTTP。MCP 工具会以 `mcp__<server>__<tool>` 注册到 `ToolRegistry`，并继续经过输入校验和权限检查。
+
+stdio 示例：
+
+```json
+{
+  "mcpServers": {
+    "local": {
+      "command": "node",
+      "args": ["/absolute/path/to/server.js"],
+      "cwd": ".",
+      "env": {
+        "EXAMPLE_ENV": "value"
+      },
+      "enabled": true
+    }
+  }
+}
+```
+
+Streamable HTTP 示例：
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_TOKEN}"
+      },
+      "enabled": true
+    }
+  }
+}
+```
+
+每个 Server 必须在 `command` 和 `url` 中二选一。项目级配置会覆盖并合并用户级同名 Server；切换传输类型时不会继承另一种传输的专属字段。
+
+启动时 CodeGrowth 会执行 MCP 初始化、读取 Server Instructions 和工具列表。单个 Server 失败不会阻止其他 Server 启动。远端 Instructions 会作为受限、不可信内容注入，不能覆盖用户指令、项目规则或权限决定。
+
+### 飞书日历
+
+飞书集成只从用户级配置读取，项目不能替换个人身份、CLI 路径和目标日历：
 
 ```json
 {
@@ -166,9 +504,7 @@ export ANTHROPIC_API_KEY="your-api-key"
 }
 ```
 
-该功能固定使用当前用户的飞书主日历和 `--as user` 身份，不接受模型提供的 `calendarId`、时区、身份或原始 CLI 参数。每次创建前都会展示标题、起止时间、时区和提醒信息，只支持单次允许，不支持永久放行。
-
-飞书应用至少需要以下用户权限：
+飞书应用至少需要：
 
 ```text
 calendar:calendar:readonly
@@ -185,359 +521,66 @@ offline_access
   --json
 ```
 
-用户完成 split-flow 登录后，需要用明确的创建指令，例如：
+只有明确的创建请求才会进入日历流程，例如：
 
 ```text
-帮我创建日程：明天九点看八股文
-创建飞书日程：后天晚上八点复习数据库
-添加到飞书日历：9月10日下午三点整理面试笔记
+帮我创建日程：明天九点复习 JVM
+添加到飞书日历：9 月 10 日下午三点整理面试笔记
 ```
 
-普通的计划或意图陈述（例如“明天九点我要看八股文”或“明天要复习项目，刷算法，完善简历”）不会创建日程，也不会触发日程信息补问。只有明确要求创建、添加或安排日程时才会进入创建流程；进入流程后，对 Agent 补问的直接回答不必重复“创建日程”。如果一次创建指令包含多个活动且无法判断应合并还是拆分，Agent 会先询问。
+普通计划陈述不会自动创建日程。创建前会展示标题、起止时间、时区和提醒信息，并且只允许本次操作，不能永久放行。
 
-v1 支持今天、明天、后天和月日表达，以及上午、下午、晚上、凌晨和裸 24 小时时刻。明确创建请求缺少标题、日期或具体时间时会先询问；暂不支持重复日程、参与人、修改、删除及“下周一”“月底”等扩展表达。
+当前只支持向当前用户主日历创建私密单次事件；不支持重复日程、参与人、修改、删除和双向同步。支持的日期表达以今天、明天、后天和明确月日为主，复杂或含糊时间会先询问。
 
-### 3. 在目标项目中启动
+## 配置项
 
-进入希望 Agent 操作的项目目录，然后使用 CodeAgent 的绝对路径启动：
+常用顶层配置：
 
-```bash
-cd /path/to/your/project
-java -jar /path/to/codeagent/target/codeagent.jar
-```
-
-也可以显式指定 workspace：
-
-```bash
-java -jar /path/to/codeagent/target/codeagent.jar --cwd /path/to/your/project
-```
-
-启动后可以直接输入自然语言任务，例如：
-
-```text
-解释一下这个项目的启动流程
-修复当前失败的单元测试
-给这个接口增加参数校验，并补充测试
-```
-
-## 命令行参数
-
-下表使用 `codeagent` 作为命令名简写。如果本地没有配置 launcher，请将它替换为 `java -jar /path/to/codeagent/target/codeagent.jar`。
-
-| 命令 | 作用 |
+| 字段 | 作用 |
 | --- | --- |
-| `codeagent` | 在当前目录创建新会话 |
-| `codeagent --cwd <path>` | 指定 workspace |
-| `codeagent --resume <id>` | 恢复当前 workspace 下的会话 |
-| `codeagent --fork <id>` | 基于已有会话历史创建新会话 |
-| `codeagent session list` | 列出当前 workspace 的会话 |
-| `codeagent session rename <id> <title>` | 重命名会话 |
-| `codeagent --max-steps <n>` | 设置单轮最大步骤数，范围为 1 到 100 |
-| `codeagent --version` | 显示版本 |
-| `codeagent --help` | 显示帮助 |
-
-例如：
-
-```bash
-java -jar target/codeagent.jar session list
-java -jar target/codeagent.jar --resume <session-id>
-```
-
-## 对话内命令
-
-以下命令由 TUI 本地处理，不会作为普通用户消息发送给模型：
-
-| 命令 | 作用 |
-| --- | --- |
-| `/init` | 检测项目结构，生成 `CODEAGENT.md` 和 `.codeagent/rules/*.md` |
-| `/memory` | 查看项目记忆及自动个人记忆的路径、解析和队列状态（不打印个人记忆正文） |
-| `/study` | 查看已录入题库及答题记录概况 |
-| `/study <相对文件名.md>` | 从 `~/.codeagent/study/imports/` 下的 Markdown 文件录入或更新题库；文件名可以包含空格 |
-| `/skill` | 列出本次启动时发现的 Skills |
-| `/compact` | 手动压缩当前会话上下文 |
-| `exit`、`quit` | 退出 CodeAgent |
-
-### 八股助手
-
-先把 Markdown 题库放进 CodeAgent 的固定导入目录：
-
-```bash
-mkdir -p ~/.codeagent/study/imports
-cp "/path/to/Java interview notes.md" ~/.codeagent/study/imports/
-```
-
-题库使用严格的两级标题结构：一级标题是章节，二级标题是题目。二级标题之后、下一个一级或二级标题之前的全部正文就是该题的标准答案，不需要再写 `### 答案`；答案不能为空。
-
-```md
-# CodeAgent
-
-## 上下文管理里的两级压缩策略是怎么做的
-
-我的思路是：不等上下文快溢出时再一次性处理，而是在每次请求模型之前做一次预检，分成“轻量清理”和“语义压缩”两级。
-
-第一级是 microCompact。它不调用模型，只清理历史中体积较大的旧工具输出，以较低成本释放上下文空间。
-
-第二级是 autoCompact。压力仍然较高时调用模型，把较早的对话整理成可继续执行任务的摘要，同时保留最近的原始对话。
-```
-
-进入 CodeAgent 后，通过相对于 `~/.codeagent/study/imports/` 的文件名导入，再查看题库概况：
-
-```text
-/study Java interview notes.md
-/study
-```
-
-导入后可以直接用自然语言开始和继续复习，例如：
-
-```text
-给我出 3 道 Java 八股题
-回答第 1 题：JVM 是运行 Java 字节码的虚拟机……
-追问第 1 题：这里的类加载具体分哪几步？
-继续下一题
-查看我的八股复习进度和重点复习方向
-```
-
-回答或追问时带上本轮题号，可以让 CodeAgent 明确关联当前题目。评分和点评以导入笔记中的答案为基准，答题记录会用于后续复习总结。
-
-每次成功执行 `/study <相对文件名.md>`，该文件都会作为完整、权威的当前题库，原子替换旧题库；旧题库中未出现在新文件里的题目不会继续用于新一轮抽题。导入失败时旧题库保持不变。已经产生的答题历史会保留，正在进行的答题轮次使用启动时的题目快照继续，不受题库替换影响。
-
-题库、答题记录和进行中轮次统一存放在 `~/.codeagent/study/`，不会写入当前项目仓库。题库与历史记录属于用户级全局数据，可在不同 workspace 和聊天 session 间复用；进行中轮次按 session 隔离，并通过保存的题目快照恢复。
-
-## 会话与恢复
-
-CodeAgent 把会话保存为 append-only JSONL。用户消息、模型回复、工具调用、工具结果、压缩边界和会话元数据都会作为事件追加保存，而不是反复覆盖整个文件。
-
-会话按 workspace 的绝对路径隔离，默认存放在：
-
-```text
-~/.codeagent/sessions/
-```
-
-因此，恢复会话时需要回到原来的项目目录，或者传入相同的 `--cwd`：
-
-```bash
-java -jar target/codeagent.jar --cwd /path/to/project --resume <session-id>
-```
-
-`--fork` 会读取源会话最近一次压缩边界之后的可恢复历史，为新会话写入 fork 元数据，并生成新的 session ID。
-
-## 项目记忆
-
-项目记忆是写在 Markdown 文件中的长期项目说明。CodeAgent 会在每一轮模型请求前重新加载这些文件，并把它们加入系统提示词；它不会因为用户说了“记住这件事”就自动修改记忆文件。
-
-在项目中输入：
-
-```text
-/init
-```
-
-CodeAgent 会检测 Java、Maven 和 Gradle 项目结构，并在文件不存在时生成其中适用的文件：
-
-```text
-CODEAGENT.md
-.codeagent/
-└── rules/
-    ├── project.md
-    ├── java.md      # 检测到 Java 时生成
-    ├── maven.md     # 检测到 Maven 时生成
-    └── gradle.md    # 检测到 Gradle 时生成
-```
-
-已经存在的文件不会被覆盖。生成后应根据项目实际情况调整其中的构建命令、代码规范和验证要求。
-
-CodeAgent 还兼容 `AGENTS.md`、目录级本地规则以及 `.mini-code/rules/*.md`。记忆文件支持通过单独一行 `@relative/path.md` 引用同一安全边界内的其他 Markdown 文件。
-
-## 自动个人记忆（可选）
-
-自动个人记忆默认关闭，只能在用户级 `~/.codeagent/settings.json` 中开启，项目配置不能替你启用：
-
-```json
-{
-  "memory": {
-    "enabled": true,
-    "timezone": "Asia/Shanghai"
-  }
-}
-```
-
-开启后，每个包含新用户输入的主 Agent turn 在完成并持久化后，会把最近五个用户 turn 的受限对话快照交给一个异步专用 Agent。主对话不会等待它；进程内最多运行一个提取任务，其余任务按提交顺序排队。专用 Agent 只能调用 `read_memory_file` 和 `write_memory_file`，不能使用普通文件、命令、MCP、飞书、Skill、`ask_user` 或公开子 Agent 工具。
-
-提取范围固定为：
-
-- `user`：用户明确表达的身份、职责、长期目标和知识背景。
-- `feedback`：用户对 Agent 工作方式的明确纠正、偏好或希望继续保持的做法。
-- `plan`：未来日程和计划，包括无具体时间、日期待定、完成或取消状态。
-
-它不是对话摘要，不记录可从源码得到的架构、文件路径、代码规范、Git 历史、调试步骤、修复过程或当前任务进度，也不会根据表现推断用户身份和水平。没有候选内容时不会调用任何记忆工具；已有相同内容时只读取不改写。只有写工具确认文件确实变化，界面才显示一条简短更新通知。
-
-三个文件的位置是：
-
-```text
-~/.codeagent/memory/user.md
-~/.codeagent/memory/plan.md
-<project-root>/.codeagent/memory/feedback.md
-```
-
-`feedback.md` 是当前项目的本地个人偏好。第一次写入前，CodeAgent 会把它加入仓库本地 `.git/info/exclude`，不会修改项目的 `.gitignore`；如果该文件已经被 Git 跟踪，则会拒绝自动覆盖。
-
-`plan.md` 使用可手工编辑的 Markdown：
-
-```markdown
-# Plan
-
-## 2026-07-25
-
-- [ ] [09:00] 看八股文
-- [ ] [时间待定] 完善简历
-- [x] [全天] 参加技术大会
-- [-] [20:00] 已取消的数据库复习
-
-## 日期待定
-
-- [ ] 整理 Agent 学习路线
-```
-
-其中 `[ ]`、`[x]`、`[-]` 分别表示未完成、已完成和已取消。时间到达不会自动把计划改成已完成；只有用户明确说明完成、取消或改期后，提取 Agent 才会更新状态。
-
-`user.md` 和当前项目的 `feedback.md` 会在每次主模型请求前重新读取，作为可能过期的参考信息；当前请求、项目明确规则、权限与安全边界始终优先。`plan.md` 不会整体注入系统提示词。用户询问某天或日期待定的日程时，主 Agent 通过只读 `query_plan` 查询。启动 CodeAgent 时还会直接展示今天未完成、逾期未完成和日期待定的计划统计，这一步不调用模型、不写 session，也不触发新的提取任务。
-
-`/memory` 会展示功能状态、三个固定路径、文件存在/大小/解析状态、提取队列状态和计划统计，但不会打印个人记忆正文。
-
-## Skills
-
-一个 Skill 是一个包含工作流说明的 `SKILL.md`。启动时，CodeAgent 只把 Skill 名称和简介加入系统提示词；当任务匹配某个 Skill 时，模型通过 `load_skill` 读取完整内容。
-
-推荐的项目级目录结构：
-
-```text
-.codeagent/
-└── skills/
-    └── code-review/
-        └── SKILL.md
-```
-
-示例 `SKILL.md`：
-
-```markdown
----
-description: 审查 Java 修改并检查测试、异常处理和资源释放。
----
-
-# Code Review
-
-1. 先检查修改范围和调用链。
-2. 再检查行为变化是否有测试覆盖。
-3. 最后运行与改动相关的验证命令。
-```
-
-Skill 名称取自目录名，上面的 Skill 名称是 `code-review`。
-
-发现顺序如下，同名 Skill 只保留优先级更高的第一个：
-
-1. `<workspace>/.codeagent/skills/`
-2. `~/.codeagent/skills/`
-3. `<workspace>/.mini-code/skills/`
-4. `~/.mini-code/skills/`
-5. `<workspace>/.claude/skills/`
-6. `~/.claude/skills/`
-
-新增或修改 Skill 后需要重新启动 CodeAgent。进入对话后可以输入 `/skill` 查看本次启动实际发现的列表。
-
-## MCP
-
-CodeAgent 支持 stdio 和 Streamable HTTP 两种 MCP 传输。可以在用户级或项目级 `settings.json` 中配置；每个启用的 Server 必须在 `command` 与 `url` 中二选一。
-
-stdio 示例：
-
-```json
-{
-  "mcpServers": {
-    "example": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp-server.js"],
-      "cwd": ".",
-      "env": {
-        "EXAMPLE_ENV": "value"
-      },
-      "enabled": true
-    }
-  }
-}
-```
-
-Streamable HTTP 示例，其中 `url` 是完整的 MCP endpoint，不会自动拼接 `/mcp`：
-
-```json
-{
-  "mcpServers": {
-    "remote": {
-      "url": "https://example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MCP_TOKEN}"
-      },
-      "enabled": true
-    }
-  }
-}
-```
-
-项目级配置会覆盖用户级同名 Server 的字段；同一传输内的 `env` 或 `headers` 会按键合并。项目级同名 Server 从 `command` 切换到 `url`（或反向切换）时，会清除继承自另一种传输的字段。Header 值支持 `${ENV_NAME}` 环境变量插值；缺失变量或试图覆盖 MCP 协议保留 Header 时，只会让对应 Server 启动失败，Header 内容不会进入摘要或系统提示词。
-
-启动时，CodeAgent 会完成 MCP 初始化、读取 Server Instructions 和工具列表，并把工具注册为类似 `mcp__example__tool_name` 的名称。Server Instructions 会作为不可信远端内容按 Server 分区、限长后加入每轮系统提示词，不能覆盖用户指令、安全规则或权限决定。单个 Server 启动失败时会记录错误状态，不会阻止其他 Server 继续初始化。
-
-stdio 现在遵循 MCP 标准，使用单行 JSON-RPC（换行分隔）通信。若私有 MCP Server 依赖 CodeAgent 旧版非标准 `Content-Length` framing，需要同步改为换行分隔 JSON。
-
-MCP 工具调用同样经过权限检查。
-
-## 权限与安全边界
-
-模型输出被视为不可信输入。涉及路径、命令、编辑和 MCP 的操作会先经过权限服务，用户可以选择：
-
-- 仅允许一次。
-- 在当前 turn 内允许。
-- 始终允许。
-- 仅拒绝一次。
-- 始终拒绝。
-- 拒绝并向 Agent 提供反馈。
-
-“始终允许”和“始终拒绝”的决策会保存到：
-
-```text
-~/.codeagent/permissions.json
-```
-
-命令工具优先使用显式参数数组，并会拒绝没有经过支持的 shell 片段。即便如此，仍建议：
-
-- 在 Git 仓库或可恢复的工作副本中运行 CodeAgent。
-- 执行前认真检查高风险权限请求。
-- 提交前审阅 diff 并运行项目测试。
-- 不在 Prompt、日志或仓库配置中暴露真实密钥。
-
-## 本地数据目录
-
-CodeAgent 默认把运行数据放在 `~/.codeagent/`：
+| `provider` | 模型协议类型 |
+| `model` | 模型名称，真实运行必填 |
+| `baseUrl` | Provider API 地址 |
+| `apiKey` / `authToken` | Provider 鉴权 |
+| `maxOutputTokens` | 单次模型输出上限 |
+| `contextWindow` | 模型上下文窗口 |
+| `maxSteps` | 单轮 Agent 最大步骤数 |
+| `providerTimeoutSeconds` | Provider 请求超时，默认 300 秒 |
+| `mcpServers` | MCP Server 配置 |
+| `integrations.feishuCalendar` | 用户级飞书日历配置 |
+| `memory` | 用户级自动个人记忆配置 |
+
+`memory` 和 `integrations` 只接受用户级配置；MCP 和模型设置支持用户级与项目级合并。
+
+## 本地数据
 
 ```text
 ~/.codeagent/
-├── settings.json       # 用户级模型和 MCP 配置
-├── permissions.json    # 持久化权限决策
+├── settings.json
+├── permissions.json
+├── sessions/
+├── skills/
+├── tool-results/
+├── agent-tool-results/
 ├── memory/
-│   ├── user.md         # 用户身份、职责、长期目标和知识背景
-│   └── plan.md         # 日程与计划
-├── sessions/           # 按 workspace 隔离的 JSONL 会话
-├── skills/             # 用户级 Skills
-└── tool-results/       # 被上下文管理器外置的大型工具结果
+│   ├── user.md
+│   └── plan.md
+└── study/
+    ├── imports/
+    ├── bank.json
+    └── events.jsonl
 ```
 
-项目级配置和规则放在目标 workspace 中：
+项目内数据：
 
 ```text
 <workspace>/
+├── AGENTS.md
 ├── CODEAGENT.md
 └── .codeagent/
     ├── settings.json
     ├── memory/
-    │   └── feedback.md  # 当前项目下的个人工作偏好，本地 Git exclude
+    │   └── feedback.md
     ├── rules/
     └── skills/
 ```
@@ -548,46 +591,53 @@ CodeAgent 默认把运行数据放在 `~/.codeagent/`：
 
 | 目录 | 职责 |
 | --- | --- |
-| `app` | 参数解析、配置加载和应用装配 |
-| `tui` | 普通行模式、Renderer TUI 和终端事件展示 |
-| `core` | AgentLoop、消息、步骤、turn 和运行事件 |
-| `model` | Anthropic、OpenAI-compatible 和 Mock 模型适配器 |
-| `tools` | 工具接口、注册表、内置工具和结果处理 |
-| `permissions` | 权限请求、作用域、持久化决策和用户交互 |
-| `session` | JSONL 会话存储、恢复、重命名和 fork |
-| `context` | token 统计、大工具结果管理和上下文压缩 |
-| `memory`、`init` | 分层项目记忆加载和初始化 |
+| `app`、`config` | CLI 参数、配置加载和应用装配 |
+| `core` | AgentLoop、消息、step、turn 和事件 |
+| `model` | LangChain4j Provider 适配与协议兼容 |
+| `tools` | 工具接口、元数据、注册表、内置工具和结果处理 |
+| `permissions` | 权限请求、作用域、交互和持久化规则 |
+| `session` | JSONL 会话、恢复、重命名和 fork |
+| `context` | Token 统计、工具结果预算和上下文压缩 |
+| `agent` | 子 Agent 角色、运行时、任务和通知 |
+| `memory`、`init` | 分层项目记忆、个人记忆和规则初始化 |
+| `study` | 题库快照、答题事件、状态恢复和统计 |
 | `skills` | Skill 发现、摘要注册和按需加载 |
-| `mcp` | stdio / Streamable HTTP MCP Client、工具发现和运行时管理 |
+| `mcp` | stdio / Streamable HTTP Client 和远端工具适配 |
+| `integrations` | 飞书日历等外部集成 |
+| `tui` | Renderer TUI、行模式、输入和终端渲染 |
 
 ## 开发与验证
 
-运行完整测试：
-
 ```bash
+# 完整测试
 mvn test
-```
 
-构建可运行 jar：
-
-```bash
+# 构建可运行 JAR
 mvn package
+
+# 清理后完整构建
+mvn clean package
 ```
 
-改动 Agent 行为时，建议至少同时验证：
+改动 Agent 行为时，建议至少覆盖：
 
-- 普通文本回复是否能正确结束 turn。
-- 工具调用结果是否能回到下一步模型上下文。
-- 权限允许、拒绝和持久化是否符合预期。
-- session 是否能恢复，compact 边界是否正确。
-- Renderer TUI 与普通行模式是否保持一致。
+- 普通文本回复和工具调用是否能正确结束 turn；
+- 工具结果是否进入下一次模型上下文；
+- 权限允许、拒绝和长期规则是否符合预期；
+- session 恢复、fork 和 compact 边界是否正确；
+- 父子 Agent 的工具隔离和取消传播是否正确；
+- Renderer TUI 与行模式行为是否一致；
+- Study 待评分、保存评审和恢复状态是否闭环。
 
-## 当前定位
+## 当前边界
 
-CodeAgent 已经覆盖 Coding Agent 的核心闭环，但仍是一个持续迭代中的个人项目。当前更适合用于：
+CodeGrowth 已覆盖一个本地 Coding Agent 的主要运行链路，但仍需继续完善：
 
-- 学习 Agent Loop、工具调用和上下文管理。
-- 验证模型适配、权限系统、会话持久化、Skills 与 MCP 设计。
-- 在受控代码仓库中完成小规模开发任务。
+- 系统化离线评测和回归基准；
+- 更强的操作系统级隔离与命令沙箱；
+- 后台子任务的持久化、崩溃恢复和容量治理；
+- Provider 故障、限流和长时间任务的可观测性；
+- 跨平台安装、升级和发布流程；
+- 外部集成更细粒度的权限模型。
 
-在用于重要或生产环境之前，仍需要补强评测体系、可观测性、故障恢复、跨平台发布和更严格的安全策略。
+在重要仓库中使用时，请保留版本控制、审查权限请求、检查最终 diff，并运行项目自己的测试。

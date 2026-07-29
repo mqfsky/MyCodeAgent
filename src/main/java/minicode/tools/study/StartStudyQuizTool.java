@@ -20,6 +20,8 @@ import java.util.Set;
 /** 从本地题库抽取一组题目，并创建或恢复当前会话的答题组。 */
 public final class StartStudyQuizTool implements Tool {
     public static final String NAME = "start_study_quiz";
+    // 只允许三个字段
+    // 题目数量，章节，是否需要恢复题目
     private static final Set<String> FIELDS = Set.of("count", "chapters", "replaceActive");
     private static final ObjectNode INPUT_SCHEMA = StudyToolSchemas.startQuiz();
     private static final ToolMetadata METADATA = new ToolMetadata(
@@ -51,6 +53,7 @@ public final class StartStudyQuizTool implements Tool {
 
     @Override
     public ValidationResult validateInput(JsonNode input) {
+        // 只允许三个字段
         return StudyToolInput.validate(input, FIELDS, (raw, builder) -> {
             StudyToolInput.optionalCount(raw, "count", builder);
             StudyToolInput.optionalChapters(raw, "chapters", builder);
@@ -64,6 +67,8 @@ public final class StartStudyQuizTool implements Tool {
         List<String> chapters = new ArrayList<>();
         input.path("chapters").forEach(value -> chapters.add(value.asText()));
         boolean replaceActive = input.path("replaceActive").asBoolean();
+        // 把 启动题组 → 转成 JSON → 包装成工具结果
+        // 返回给模型
         return StudyToolResult.call(NAME, toolContext, () -> StudyToolResult.quiz(
                 studyService.startQuiz(toolContext.sessionId(), count, List.copyOf(chapters), replaceActive)));
     }

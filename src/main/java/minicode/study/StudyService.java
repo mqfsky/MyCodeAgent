@@ -152,6 +152,9 @@ public final class StudyService {
         }
     }
 
+    /**
+     * 答题业务层
+     */
     public synchronized QuizView startQuiz(String sessionId,
                                            int count,
                                            List<String> chapters,
@@ -164,11 +167,15 @@ public final class StudyService {
                                          List<String> chapters,
                                          boolean replaceActive) {
         String actualSessionId = requireText(sessionId, "sessionId");
+        // 实际题目数量
         int actualCount = count <= 0 ? DEFAULT_QUIZ_COUNT : count;
         if (actualCount > MAX_QUIZ_COUNT) {
             throw new StudyException("count must be between 1 and " + MAX_QUIZ_COUNT);
         }
+        // 读取答题事件，恢复答题状态
         Projection projection = projection();
+
+        // 修复“逻辑完成但缺少完成事件”的题组
         Optional<QuizState> recoveredCompletion = projection.unfinalizedCompletedQuiz(actualSessionId);
         if (recoveredCompletion.isPresent()) {
             QuizState completed = recoveredCompletion.orElseThrow();
@@ -176,14 +183,22 @@ public final class StudyService {
                     event -> event.put("reason", "recovered_completion"));
             projection = projection();
         }
+
+        // 查询当前 session 的题组
         Optional<QuizState> active = projection.activeQuiz(actualSessionId);
+        // 当前存在活动题组，并且用户没有要求替换
+        // 当前 session 已有题组时直接恢复
         if (active.isPresent() && !replaceActive) {
             return quizView(active.orElseThrow(), true);
         }
+        // 当用户要求替换
+        // 并且存在还没有评分的题目，拒绝替换
+        // pendingByAttempt存的是还没有评分的题目
         if (active.isPresent() && !active.orElseThrow().pendingByAttempt.isEmpty()) {
             throw new StudyException("Save the pending study review before replacing the active quiz");
         }
 
+        // 根据章节提取题目
         List<StudyQuestion> candidates = filterByChapters(loadBankQuestions(), chapters);
         if (candidates.isEmpty()) {
             if (loadBankQuestions().isEmpty()) {
@@ -191,9 +206,13 @@ public final class StudyService {
             }
             throw new StudyException("No study questions matched chapters: " + String.join(", ", chapters));
         }
+
+        // 选择题目
         List<StudyQuestion> selected = selectQuestions(candidates, projection, Math.min(actualCount, candidates.size()));
         String quizId = "quiz_" + idSupplier.get();
         Optional<String> replacedQuizId = active.map(quiz -> quiz.quizId);
+
+        // 更新事件，添加进 events.jsonl
         appendEvent("QUIZ_STARTED", quizId, actualSessionId, event -> {
             event.put("requestedCount", actualCount);
             event.put("focusQuestionId", selected.getFirst().id());
@@ -206,6 +225,7 @@ public final class StudyService {
                 previous.quizId,
                 actualSessionId,
                 event -> event.put("reason", "replaced")));
+        // 返回记录到事件里的题目
         return quizView(projection().activeQuiz(actualSessionId).orElseThrow(), false);
     }
 
@@ -252,12 +272,17 @@ public final class StudyService {
                                                    SubmissionKind submissionKind,
                                                    String userAnswer) {
         SubmissionKind actualKind = Objects.requireNonNull(submissionKind, "submissionKind");
+        // 当前题组
         QuizState quiz = requireActiveQuiz(sessionId);
+        // 当前题目
         StudyQuestion question = quiz.requireQuestion(questionId);
+
+        // 检查题目状态，是否已经完成
         QuestionState current = quiz.status(question.id());
         if (current == QuestionState.GRADED || current == QuestionState.SKIPPED) {
             throw new StudyException("Question is already completed: " + question.id());
         }
+
         PendingAttempt existing = quiz.pendingByQuestion.get(question.id());
         if (existing != null) {
             return preparedView(quiz, question, existing, true);
@@ -266,12 +291,16 @@ public final class StudyService {
             throw new StudyException("Another question is waiting for save_study_review");
         }
 
+
         String actualAnswer = userAnswer == null ? "" : userAnswer;
         if (actualKind == SubmissionKind.ANSWER && actualAnswer.isBlank()) {
             throw new StudyException("userAnswer must not be blank for ANSWER");
         }
+
         String attemptId = "attempt_" + idSupplier.get();
+        // 用户选择跳过
         if (actualKind == SubmissionKind.SKIP) {
+            // 添加事件
             appendEvent("QUESTION_SKIPPED", quiz.quizId, quiz.sessionId, event -> {
                 event.put("attemptId", attemptId);
                 event.put("questionId", question.id());
@@ -295,6 +324,8 @@ public final class StudyService {
                     "SKIPPED"
             );
         }
+
+        // 用户提交答案或者放弃
         appendEvent("ANSWER_SUBMITTED", quiz.quizId, quiz.sessionId, event -> {
             event.put("attemptId", attemptId);
             event.put("questionId", question.id());
@@ -313,23 +344,32 @@ public final class StudyService {
         return withOperationLock(() -> saveReviewWithinLock(sessionId, draft));
     }
 
+    /**
+     * 把模型生成的评分结果，安全地落成一次正式的答题评审记录，并判断整组题是否完成。
+     */
     private ReviewResult saveReviewWithinLock(String sessionId, ReviewDraft draft) {
         Objects.requireNonNull(draft, "draft");
         String actualSessionId = requireText(sessionId, "sessionId");
         validateScore(draft.score());
         Projection before = projection();
+
+        // 根据 attempt 判断是否已经评分过
         Optional<ReviewRecord> alreadySaved = before.reviewByAttempt(draft.attemptId());
+        // 若已经评分过
         if (alreadySaved.isPresent()) {
             ReviewRecord record = alreadySaved.orElseThrow();
             QuizState state = before.quiz(record.quizId);
             if (!state.sessionId.equals(actualSessionId)) {
                 throw new StudyException("Study attempt belongs to another session");
             }
+
+            // 返回原来的评分结果
             completeQuizIfDone(state);
             state = projection().quiz(record.quizId);
             return reviewResult(state, record, true);
         }
 
+        // 找到待评分记录
         QuizState quiz = requireActiveQuiz(actualSessionId);
         PendingAttempt pending = quiz.pendingByAttempt.get(draft.attemptId());
         if (pending == null) {
@@ -340,6 +380,7 @@ public final class StudyService {
         }
         StudyQuestion question = quiz.requireQuestion(pending.questionId);
         ReviewDraft normalized = draft.normalized();
+        // 写入ANSWER_GRADED事件
         appendEvent("ANSWER_GRADED", quiz.quizId, quiz.sessionId, event -> {
             event.put("attemptId", pending.attemptId);
             event.put("questionId", question.id());
@@ -354,10 +395,13 @@ public final class StudyService {
             putStrings(event, "reviewTopics", normalized.reviewTopics());
         });
 
+        // 重新根据事件日志生成一份最新的答题状态，拿到 ANSWER_GRADED 写入之后的状态。
         Projection afterGrade = projection();
         QuizState updated = afterGrade.quiz(quiz.quizId);
+        // 判断整组题目是否结束
         completeQuizIfDone(updated);
         Projection completed = projection();
+
         QuizState finalState = completed.quiz(quiz.quizId);
         ReviewRecord record = completed.reviewByAttempt(draft.attemptId()).orElseThrow();
         return reviewResult(finalState, record, false);
@@ -691,6 +735,13 @@ public final class StudyService {
                              String sessionId,
                              java.util.function.Consumer<ObjectNode> payload) {
         ObjectNode event = JSON.objectNode();
+        // {
+        //  "eventId": "uuid",
+        //  "timestamp": "2026-07-27T...",
+        //  "type": "QUIZ_STARTED",
+        //  "sessionId": "session_xxx",
+        //  "quizId": "quiz_xxx"
+        // }
         event.put("eventId", idSupplier.get());
         event.put("timestamp", Instant.now(clock).toString());
         event.put("type", type);
@@ -733,13 +784,25 @@ public final class StudyService {
                                                 Projection projection,
                                                 int count) {
         List<StudyQuestion> shuffled = new ArrayList<>(candidates);
+        // 打乱顺序
         Collections.shuffle(shuffled, random);
         Map<String, QuestionHistory> histories = projection.histories();
+        // 按照规则排序
+        // 从未做过，或者标准答案版本已变化；
+        // 上一次被跳过；
+        // 历史平均分更低；
+        // 距离上次回答时间更久。
         shuffled.sort((left, right) -> comparePriority(
                 left, histories.get(left.id()), right, histories.get(right.id())));
         return List.copyOf(shuffled.subList(0, count));
     }
 
+    /**
+     * 返回负数：left 排在 right 前面
+     * 返回正数：right 排在 left 前面
+     * 返回 0：两者优先级相同
+     * @return
+     */
     private static int comparePriority(StudyQuestion leftQuestion,
                                        QuestionHistory left,
                                        StudyQuestion rightQuestion,
@@ -823,9 +886,9 @@ public final class StudyService {
                 quiz.numberOf(question.id()),
                 question.chapter(),
                 question.question(),
-                question.answer(),
+                question.answer(), // 标准答案
                 question.revisionHash(),
-                pending.userAnswer,
+                pending.userAnswer, // 用户回答
                 pending.kind,
                 reviewRequired,
                 reviewRequired ? "REVIEW_PENDING" : quiz.status(question.id()).name()
@@ -965,10 +1028,10 @@ public final class StudyService {
     }
 
     public enum QuestionState {
-        UNANSWERED,
-        REVIEW_PENDING,
-        GRADED,
-        SKIPPED
+        UNANSWERED, // 未答题
+        REVIEW_PENDING, // 已将标准答案和用户回答交给模型，等待评分
+        GRADED, // 已评分
+        SKIPPED // 跳过
     }
 
     public record QuizQuestionView(int number, String questionId, String chapter, String question, String status) {
@@ -1247,7 +1310,17 @@ public final class StudyService {
             return projection;
         }
 
+        /**
+         * 将一条学习事件应用到当前投影，恢复题组、待评分作答和评审记录等内存状态。
+         * <p>
+         * 事件会按照持久化顺序逐条回放。除了推进状态，本方法还会校验事件是否符合当前
+         * 状态机；如果事件顺序错误、快照不一致或试图修改已关闭题组，则拒绝继续回放。
+         *
+         * @param event 从事件存储中读取的学习事件
+         * @throws StudyException 当事件内容或状态转换不合法时
+         */
         private void apply(ObjectNode event) {
+            // 读取所有事件共有的路由和审计字段。
             String type = event.path("type").asText();
             String quizId = event.path("quizId").asText();
             String sessionId = event.path("sessionId").asText();
@@ -1255,6 +1328,7 @@ public final class StudyService {
             Instant eventTime = Instant.parse(event.path("timestamp").asText());
             switch (type) {
                 case "QUIZ_STARTED" -> {
+                    // 创建题组前校验题目快照，避免重复题组或被篡改、重复的题目进入投影。
                     if (quizzes.containsKey(quizId)) {
                         throw new StudyException("Duplicate study quiz id: " + quizId);
                     }
@@ -1282,6 +1356,7 @@ public final class StudyService {
                     }
                     String replacesQuizId = event.path("replacesQuizId").asText("");
                     if (!replacesQuizId.isBlank()) {
+                        // 替换题组时关闭旧题组，但不能丢弃尚未评分的作答。
                         QuizState replaced = requireQuizForSession(replacesQuizId, sessionId);
                         if (replaced.finished || replaced.abandoned || replaced.logicallyCompleted()) {
                             throw new StudyException("Replacement references a closed study quiz");
@@ -1302,6 +1377,7 @@ public final class StudyService {
                     ));
                 }
                 case "QUESTION_FOCUSED" -> {
+                    // 只有题组中仍允许操作的题目才能成为当前焦点。
                     QuizState quiz = requireOpenQuiz(quizId, sessionId);
                     StudyQuestion question = quiz.requireQuestion(event.path("questionId").asText());
                     ensureFocusAllowed(quiz, question);
@@ -1309,6 +1385,7 @@ public final class StudyService {
                 }
                 case "ANSWER_SUBMITTED" -> {
                     QuizState quiz = requireOpenQuiz(quizId, sessionId);
+                    // 一个题组同时只允许存在一个等待模型评分的作答。
                     if (!quiz.pendingByAttempt.isEmpty()) {
                         throw new StudyException("Quiz already has a pending study attempt");
                     }
@@ -1334,6 +1411,7 @@ public final class StudyService {
                             kind,
                             userAnswer
                     );
+                    // 分别按题目和作答编号建立索引，供后续 ANSWER_GRADED 精确匹配。
                     quiz.pendingByQuestion.put(pending.questionId, pending);
                     quiz.pendingByAttempt.put(pending.attemptId, pending);
                     quiz.focusQuestionId = pending.questionId;
@@ -1343,6 +1421,7 @@ public final class StudyService {
                     String attemptId = requireText(event.path("attemptId").asText(), "attemptId");
                     String questionId = requireText(event.path("questionId").asText(), "questionId");
                     PendingAttempt pending = quiz.pendingByAttempt.get(attemptId);
+                    // 评分必须对应一条真实且尚未处理的提交记录。
                     if (pending == null
                             || !pending.questionId.equals(questionId)
                             || quiz.pendingByQuestion.get(questionId) != pending) {
@@ -1374,6 +1453,7 @@ public final class StudyService {
                             eventTime,
                             sequence
                     );
+                    // 将题目从“等待评分”推进为“已评分”，保存评审并将焦点移到下一题。
                     quiz.pendingByAttempt.remove(attemptId);
                     quiz.pendingByQuestion.remove(questionId);
                     quiz.reviewsByQuestion.put(questionId, review);
@@ -1383,6 +1463,7 @@ public final class StudyService {
                 }
                 case "QUESTION_SKIPPED" -> {
                     QuizState quiz = requireOpenQuiz(quizId, sessionId);
+                    // 存在待评分作答时禁止跳题，避免破坏单一待评审状态。
                     if (!quiz.pendingByAttempt.isEmpty()) {
                         throw new StudyException("Cannot skip while another review is pending");
                     }
@@ -1394,6 +1475,7 @@ public final class StudyService {
                     if (quiz.status(questionId) != QuestionState.UNANSWERED) {
                         throw new StudyException("Study question was skipped from an invalid state");
                     }
+                    // 跳题不生成 ReviewRecord，只记录跳过事实并继续下一题。
                     quiz.skipped.add(questionId);
                     quiz.advanceFocusAfter(questionId);
                     skips.add(new SkippedRecord(
@@ -1406,6 +1488,7 @@ public final class StudyService {
                 }
                 case "QUIZ_FINISHED" -> {
                     QuizState quiz = requireQuizForSession(quizId, sessionId);
+                    // 只有所有题目都已评分或跳过，才允许把题组正式标记为完成。
                     if (quiz.finished || quiz.abandoned || !quiz.logicallyCompleted()) {
                         throw new StudyException("QUIZ_FINISHED was recorded from an invalid state");
                     }
@@ -1413,6 +1496,7 @@ public final class StudyService {
                 }
                 case "QUIZ_ABANDONED" -> {
                     QuizState quiz = requireQuizForSession(quizId, sessionId);
+                    // 仍有待评分作答时不能废弃题组，否则评审结果将失去归属。
                     if (quiz.finished || quiz.abandonmentRecorded || !quiz.pendingByAttempt.isEmpty()) {
                         throw new StudyException("QUIZ_ABANDONED was recorded from an invalid state");
                     }

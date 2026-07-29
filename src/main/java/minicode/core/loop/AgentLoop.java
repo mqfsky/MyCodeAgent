@@ -400,6 +400,8 @@ public final class AgentLoop {
                 // 7.FINAL/UNSPECIFIED 表示本轮完成；PROGRESS 只是中间进展，需要追加续跑提示继续下一 step。
                 switch (assistantStep.kind()) {
                     case FINAL, UNSPECIFIED -> {
+                        // 答题系统的最终回答拦截器
+                        // 避免模型生成评分后没有调用保存评分工具就直接结束
                         Optional<String> rejectionReason = completionGuard.rejectionReason(assistantStep);
                         if (rejectionReason.isPresent()) {
                             rejectedCompletionCount++;
@@ -422,12 +424,14 @@ public final class AgentLoop {
                             return completionRejectedResult(
                                     messages, actions, rejectedCompletionCount, rejectionReason.orElseThrow());
                         }
+
                         appendAssistantThinkingBlocks(request.turnId(), messages, actions, assistantStep);
                         AssistantMessage finalMessage = new AssistantMessage(
                                 assistantStep.content(),
                                 assistantStep.usage(),
                                 UsageStaleness.fresh()
                         );
+
                         appendMessage(request.turnId(), messages, actions, finalMessage);
                         request.cancellationToken().throwIfCancellationRequested(CancellationPhase.AFTER_TURN);
                         return AgentTurnResult.finalResult(List.copyOf(messages), new TurnPersistencePlan(actions));
