@@ -8,7 +8,7 @@ import java.util.Optional;
  * Validates a candidate final response before an agent turn is allowed to complete
  *
  * An empty result accepts the response. A non-empty result rejects it and supplies
- * a stable reason that can be sent back to the model for a focused retry
+ * a stable reason that can be sent back to the model for a focused retry.
  */
 @FunctionalInterface
 public interface AssistantCompletionGuard {
